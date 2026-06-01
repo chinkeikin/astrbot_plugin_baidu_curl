@@ -1,0 +1,17 @@
+name: astrbot_plugin_baidu_curl
+display_name: 百度网盘cURL下载助手
+desc: 发送百度网盘分享链接，自动解析文件列表并生成cURL下载命令。支持带提取码的分享链接。
+help: |
+  使用方法：
+  1. 在插件配置中填入你的 BDUSS（百度网盘登录Cookie）
+  2. 发送百度网盘分享链接，如：
+     https://pan.baidu.com/s/1xxxxxxx 提取码:xxxx
+  3. 插件会自动解析并返回cURL下载命令
+
+  如何获取 BDUSS：
+  1. 登录 https://pan.baidu.com
+  2. 按F12打开开发者工具
+  3. 切换到Application/存储标签
+  4. 在Cookies中找到 BDUSS 的值
+version: v2.0.0
+author: AstrBot Plugin

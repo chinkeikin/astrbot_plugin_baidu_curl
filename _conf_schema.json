@@ -1,0 +1,58 @@
+{
+    "show_curl_command": {
+        "description": "显示cURL命令",
+        "hint": "是否显示完整的cURL下载命令",
+        "type": "bool",
+        "default": true
+    },
+    "allow_sessions": {
+        "description": "允许的会话",
+        "hint": "留空则所有会话可用",
+        "type": "list",
+        "default": []
+    },
+    "autosave_url": {
+        "description": "baidu-autosave 地址",
+        "hint": "如 http://192.168.1.207:5000",
+        "type": "string",
+        "default": ""
+    },
+    "autosave_user": {
+        "description": "baidu-autosave 用户名",
+        "type": "string",
+        "default": ""
+    },
+    "autosave_pass": {
+        "description": "baidu-autosave 密码",
+        "type": "string",
+        "default": ""
+    },
+    "autosave_dir": {
+        "description": "转存目录",
+        "hint": "转存到网盘的目录",
+        "type": "string",
+        "default": "/来自Bot"
+    },
+    "openlist_url": {
+        "description": "OpenList 地址",
+        "hint": "如 http://192.168.1.207:7344，用于获取下载直链",
+        "type": "string",
+        "default": ""
+    },
+    "openlist_user": {
+        "description": "OpenList 用户名",
+        "type": "string",
+        "default": ""
+    },
+    "openlist_pass": {
+        "description": "OpenList 密码",
+        "type": "string",
+        "default": ""
+    },
+    "openlist_pan_path": {
+        "description": "OpenList 百度网盘挂载路径",
+        "hint": "如 /百度",
+        "type": "string",
+        "default": "/百度"
+    }
+}
