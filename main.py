@@ -114,81 +114,19 @@ class BaiduCurlPlugin(Star):
         logger.info(f"[scan] 要匹配的文件: {autosave_files}, 已存在: {existed}")
         
         # 等待转存完成
-        import time
-        time.sleep(5)
+        await asyncio.sleep(5)
         
-        # 用百度网盘 API 扫描并匹配文件
+        # 用百度网盘 API 扫描并匹配文件（在线程池中执行避免阻塞）
         token_ok = await self._refresh_access_token()
         if token_ok and self._access_token:
-            # 如果没有文件名（已存在的情况），扫描所有文件
             scan_files = autosave_files if autosave_files else None
-            try:
-                s = cffi_requests.Session(impersonate="chrome120")
-                at = self._access_token
-                
-                # 扫描 /来自Bot 目录
-                bot_encoded = urllib.parse.quote("/来自Bot", safe="/")
-                bot_resp = s.get(
-                    f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={bot_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                    timeout=15
-                )
-                bot_data = bot_resp.json()
-                logger.info(f"[scan] /来自Bot 目录文件数: {len(bot_data.get('list', []))}")
-                
-                # 用文件名匹配
-                for f in bot_data.get("list", []):
-                    fname = f.get("server_filename", "")
-                    if scan_files is None or fname in scan_files:
-                        files.append(f.get("path", ""))
-                        save_dir = "/来自Bot"
-                        logger.info(f"[scan] 匹配到文件: {fname}")
-                
-                # 如果在 /来自Bot 没找到，搜索根目录的 sharelink 文件夹
-                if not files:
-                    logger.info(f"[scan] /来自Bot 没找到，搜索根目录 sharelink")
-                    root_resp = s.get(
-                        f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir=/&dlink=1&web=1&app_id=250528&access_token={at}",
-                        timeout=15
-                    )
-                    root_data = root_resp.json()
-                    for item in root_data.get("list", []):
-                        if item.get("isdir") and "sharelink" in item.get("path", ""):
-                            logger.info(f"[scan] 搜索根目录: {item['path']}")
-                            sub_encoded = urllib.parse.quote(item["path"], safe="/")
-                            sub_resp = s.get(
-                                f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                                timeout=15
-                            )
-                            sub_data = sub_resp.json()
-                            for f in sub_data.get("list", []):
-                                fname = f.get("server_filename", "")
-                                if scan_files is None or fname in scan_files:
-                                    files.append(f.get("path", ""))
-                                    save_dir = item["path"]
-                                    logger.info(f"[scan] 匹配到文件: {fname} (在 {item['path']})")
-                
-                # 如果在 /来自Bot 没找到，搜索子目录
-                if not files:
-                    logger.info(f"[scan] 根目录没找到，搜索子目录")
-                    for item in bot_data.get("list", []):
-                        if item.get("isdir") and "sharelink" in item.get("path", ""):
-                            logger.info(f"[scan] 搜索子目录: {item['path']}")
-                            sub_encoded = urllib.parse.quote(item["path"], safe="/")
-                            sub_resp = s.get(
-                                f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                                timeout=15
-                            )
-                            sub_data = sub_resp.json()
-                            for f in sub_data.get("list", []):
-                                fname = f.get("server_filename", "")
-                                if scan_files is None or fname in scan_files:
-                                    files.append(f.get("path", ""))
-                                    save_dir = item["path"]
-                                    logger.info(f"[scan] 匹配到文件: {fname} (在 {item['path']})")
-            except Exception as e:
-                logger.error(f"[scan] 扫描失败: {e}")
-        
-        logger.info(f"[scan] 最终文件: {files}, 目录: {save_dir}")
+            at = self._access_token
+            from concurrent.futures import ThreadPoolExecutor
+            loop = asyncio.get_event_loop()
+            files, save_dir = await loop.run_in_executor(
+                ThreadPoolExecutor(max_workers=1),
+                self._scan_files_sync, at, scan_files
+            )
         
         if not files:
             yield ev.plain_result("❌ 未找到转存的文件")
@@ -346,6 +284,78 @@ class BaiduCurlPlugin(Star):
         except Exception as e:
             logger.error(f"[autosave] 转存失败: {e}")
             return {"success": False, "error": str(e)}
+
+
+    def _scan_files_sync(self, at, scan_files):
+        """同步扫描百度网盘文件（在线程池中调用）"""
+        files = []
+        save_dir = "/来自Bot"
+        
+        try:
+            s = cffi_requests.Session(impersonate="chrome120")
+            
+            # 扫描 /来自Bot 目录
+            bot_encoded = urllib.parse.quote("/来自Bot", safe="/")
+            bot_resp = s.get(
+                f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={bot_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                timeout=15
+            )
+            bot_data = bot_resp.json()
+            logger.info(f"[scan] /来自Bot 目录文件数: {len(bot_data.get('list', []))}")
+            
+            # 用文件名匹配
+            for f in bot_data.get("list", []):
+                fname = f.get("server_filename", "")
+                if scan_files is None or fname in scan_files:
+                    files.append(f.get("path", ""))
+                    save_dir = "/来自Bot"
+                    logger.info(f"[scan] 匹配到文件: {fname}")
+            
+            # 搜索根目录的 sharelink 文件夹
+            if not files:
+                logger.info(f"[scan] /来自Bot 没找到，搜索根目录 sharelink")
+                root_resp = s.get(
+                    f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir=/&dlink=1&web=1&app_id=250528&access_token={at}",
+                    timeout=15
+                )
+                root_data = root_resp.json()
+                for item in root_data.get("list", []):
+                    if item.get("isdir") and "sharelink" in item.get("path", ""):
+                        sub_encoded = urllib.parse.quote(item["path"], safe="/")
+                        sub_resp = s.get(
+                            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                            timeout=15
+                        )
+                        sub_data = sub_resp.json()
+                        for f in sub_data.get("list", []):
+                            fname = f.get("server_filename", "")
+                            if scan_files is None or fname in scan_files:
+                                files.append(f.get("path", ""))
+                                save_dir = item["path"]
+                                logger.info(f"[scan] 匹配到文件: {fname} (在 {item['path']})")
+            
+            # 搜索 /来自Bot 的子目录
+            if not files:
+                logger.info(f"[scan] 根目录没找到，搜索子目录")
+                for item in bot_data.get("list", []):
+                    if item.get("isdir") and "sharelink" in item.get("path", ""):
+                        sub_encoded = urllib.parse.quote(item["path"], safe="/")
+                        sub_resp = s.get(
+                            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                            timeout=15
+                        )
+                        sub_data = sub_resp.json()
+                        for f in sub_data.get("list", []):
+                            fname = f.get("server_filename", "")
+                            if scan_files is None or fname in scan_files:
+                                files.append(f.get("path", ""))
+                                save_dir = item["path"]
+                                logger.info(f"[scan] 匹配到文件: {fname} (在 {item['path']})")
+        except Exception as e:
+            logger.error(f"[scan] 扫描失败: {e}")
+        
+        logger.info(f"[scan] 最终文件: {files}, 目录: {save_dir}")
+        return files, save_dir
 
 
     def _autosave_sync(self, surl: str, pwd: str) -> dict:
