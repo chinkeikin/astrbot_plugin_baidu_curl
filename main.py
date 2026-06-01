@@ -1,11 +1,12 @@
 """
-百度网盘 cURL 下载助手 v6
+百度网盘 cURL 下载助手 v7
 baidu-autosave 转存 + refresh_token 刷新 + filemetas API 获取直链
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 import json
 import re
 from typing import Optional
@@ -18,20 +19,6 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
-
-
-def _size(n) -> str:
-    try:
-        n = int(n)
-    except (ValueError, TypeError):
-        return ""
-    if n <= 0:
-        return ""
-    for u in ["B", "KB", "MB", "GB", "TB"]:
-        if n < 1024:
-            return f"{n:.1f}{u}"
-        n /= 1024
-    return f"{n:.1f}PB"
 
 
 def _parse(text: str) -> dict:
@@ -134,7 +121,6 @@ class BaiduCurlPlugin(Star):
             try:
                 s = cffi_requests.Session(impersonate="chrome120")
                 at = self._access_token
-                import urllib.parse
                 
                 # 扫描 /来自Bot 目录
                 bot_encoded = urllib.parse.quote("/来自Bot", safe="/")
@@ -405,7 +391,6 @@ class BaiduCurlPlugin(Star):
                 return {"success": False, "error": save_data.get("message", "添加任务失败")}
             
             # 4. 获取任务列表，找到新增的任务
-            import time
             time.sleep(1)
             
             tasks_resp = s.get(f"{self.autosave_url}/api/tasks", headers=headers, allow_redirects=False, timeout=15)
