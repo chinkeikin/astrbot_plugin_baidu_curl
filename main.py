@@ -89,6 +89,7 @@ class BaiduCurlPlugin(Star):
     async def _run(self, ev: AstrMessageEvent, surl: str, pwd: str):
         # 1. baidu-autosave 转存
         yield ev.plain_result("📦 转存中...")
+        cutoff_time = int(time.time()) - 60  # 记录转存前时间（60s buffer），后续只匹配此后的文件
         tr = await self._autosave(surl, pwd)
         if not tr.get("success"):
             yield ev.plain_result("❌ 转存失败: " + tr.get("error", "未知"))
@@ -120,7 +121,7 @@ class BaiduCurlPlugin(Star):
             loop = asyncio.get_running_loop()
             files, final_dir = await loop.run_in_executor(
                 None,
-                self._scan_files_sync, at, scan_files, self.autosave_dir, save_dir, extra_dirs, has_actual_dir
+                self._scan_files_sync, at, scan_files, self.autosave_dir, save_dir, extra_dirs, has_actual_dir, cutoff_time
             )
             # 用扫描到的实际目录更新 save_dir
             if final_dir:
@@ -287,7 +288,7 @@ class BaiduCurlPlugin(Star):
         except Exception as e:
             logger.error(f"[autosave] 转存失败: {e}")
             return {"success": False, "error": str(e)}
-    def _scan_files_sync(self, at, scan_files, autosave_dir="/来自Bot", actual_dir=None, extra_dirs=None, has_actual_dir=False):
+    def _scan_files_sync(self, at, scan_files, autosave_dir="/来自Bot", actual_dir=None, extra_dirs=None, has_actual_dir=False, min_mtime=0):
         """同步扫描百度网盘文件（在线程池中调用）"""
         files = []
         save_dir = autosave_dir
@@ -325,6 +326,8 @@ class BaiduCurlPlugin(Star):
                     # 跳过目录
                     if f.get("isdir"):
                         continue
+                    if min_mtime and f.get("server_mtime", 0) < min_mtime:
+                        continue
                     # 如果有明确的转存目录，不按文件名过滤
                     if not has_actual_dir and scan_files is not None and fname not in scan_files:
                         continue
@@ -355,6 +358,8 @@ class BaiduCurlPlugin(Star):
                         for f in sub_data.get("list", []):
                             fname = f.get("server_filename", "")
                             if f.get("isdir"):
+                                continue
+                            if min_mtime and f.get("server_mtime", 0) < min_mtime:
                                 continue
                             if not has_actual_dir and scan_files is not None and fname not in scan_files:
                                 continue
@@ -395,17 +400,20 @@ class BaiduCurlPlugin(Star):
                                             sub3_data = sub3_resp.json()
                                             for f3 in sub3_data.get("list", []):
                                                 if not f3.get("isdir"):
-                                                    files.append(f3.get("path", ""))
-                                                    save_dir = f2["path"]
-                                                    logger.info(f"[scan] 匹配到文件(日期目录): {f3.get('server_filename','')}")
+                                                    if min_mtime and f3.get("server_mtime", 0) >= min_mtime:
+                                                        files.append(f3.get("path", ""))
+                                                        save_dir = f2["path"]
+                                                        logger.info(f"[scan] 匹配到文件(日期目录): {f3.get('server_filename','')}")
                                         else:
-                                            files.append(f2.get("path", ""))
-                                            save_dir = f["path"]
-                                            logger.info(f"[scan] 匹配到文件(日期目录): {f2.get('server_filename','')}")
+                                            if min_mtime and f2.get("server_mtime", 0) >= min_mtime:
+                                                files.append(f2.get("path", ""))
+                                                save_dir = f["path"]
+                                                logger.info(f"[scan] 匹配到文件(日期目录): {f2.get('server_filename','')}")
                                 else:
-                                    files.append(f.get("path", ""))
-                                    save_dir = path
-                                    logger.info(f"[scan] 匹配到文件(日期目录): {fname}")
+                                    if min_mtime and f.get("server_mtime", 0) >= min_mtime:
+                                        files.append(f.get("path", ""))
+                                        save_dir = path
+                                        logger.info(f"[scan] 匹配到文件(日期目录): {fname}")
                         except Exception as e:
                             logger.warning(f"[scan] 日期目录扫描错误: {e}")
             
@@ -423,6 +431,8 @@ class BaiduCurlPlugin(Star):
                         for f in sub_data.get("list", []):
                             fname = f.get("server_filename", "")
                             if scan_files is None or fname in scan_files:
+                                if min_mtime and f.get("server_mtime", 0) < min_mtime:
+                                    continue
                                 files.append(f.get("path", ""))
                                 save_dir = item["path"]
                                 logger.info(f"[scan] 匹配到文件: {fname} (在 {item['path']})")
