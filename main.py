@@ -158,10 +158,17 @@ class BaiduCurlPlugin(Star):
                 # 4. 移动文件夹到 /来自Bot
                 move_msg = ""
                 yield ev.plain_result("📁 移动文件夹到 " + self.autosave_dir + "...")
+                # 先移动实际转存目录（如 /2024/202402/20240205）
+                if save_dir != self.autosave_dir and not save_dir.startswith("/来自Bot"):
+                    move_ok = await self._move_single_dir(save_dir, self.autosave_dir)
+                    if move_ok:
+                        move_msg += "\n\n✅ " + save_dir + " 已移动到 " + self.autosave_dir
+                
+                # 再移动 sharelink 文件夹
                 move_ok = await self._move_folder("", self.autosave_dir)
                 if move_ok:
-                    move_msg = "\n\n✅ 文件夹已移动到 " + self.autosave_dir
-                else:
+                    move_msg += "\n\n✅ sharelink 文件夹已移动到 " + self.autosave_dir
+                elif not move_msg:
                     move_msg = "\n\n⚠️ 移动失败"
                 
                 # 5. 清理 baidu-autosave 任务
@@ -590,6 +597,97 @@ class BaiduCurlPlugin(Star):
     # ---- 移动文件夹 ----
 
     
+    async def _move_single_dir(self, from_dir: str, to_dir: str) -> bool:
+        """移动单个目录到目标目录"""
+        if not self.openlist_url or not self.openlist_user:
+            logger.warning("[move] 未配置 OpenList，跳过移动")
+            return False
+        
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self._move_single_dir_sync, from_dir, to_dir)
+        except Exception as e:
+            logger.error(f"[move] 移动失败: {e}")
+            return False
+    
+    def _move_single_dir_sync(self, from_dir: str, to_dir: str) -> bool:
+        """同步移动单个目录"""
+        try:
+            with cffi_requests.Session(impersonate="chrome120") as s:
+                # 登录 OpenList
+                login_resp = s.post(
+                    f"{self.openlist_url}/api/auth/login",
+                    json={"username": self.openlist_user, "password": self.openlist_pass},
+                    allow_redirects=False,
+                    timeout=15
+                )
+                admin_token = login_resp.json().get("data", {}).get("token", "")
+                headers = {"Authorization": admin_token}
+                
+                pan_prefix = "/百度"
+                
+                # 获取源目录里的文件
+                src_path = f"{pan_prefix}{from_dir}"
+                resp = s.post(
+                    f"{self.openlist_url}/api/fs/list",
+                    headers=headers,
+                    json={"path": src_path, "page": 1, "per_page": 100, "refresh": True},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+                data = resp.json()
+                
+                if data.get("code") != 200:
+                    logger.error(f"[move] 获取目录失败: {data}")
+                    return False
+                
+                files = [f.get("name") for f in (data.get("data", {}).get("content") or [])]
+                
+                if not files:
+                    logger.info(f"[move] 目录为空: {from_dir}")
+                    return True
+                
+                logger.info(f"[move] 移动 {from_dir} -> {to_dir}, 文件: {files}")
+                
+                # 创建目标子目录
+                folder_name = from_dir.rstrip("/").split("/")[-1]
+                dst_path = f"{pan_prefix}{to_dir}/{folder_name}"
+                s.post(
+                    f"{self.openlist_url}/api/fs/mkdir",
+                    headers=headers,
+                    json={"path": dst_path},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+                
+                # 移动文件
+                move_resp = s.post(
+                    f"{self.openlist_url}/api/fs/move",
+                    headers=headers,
+                    json={
+                        "src_dir": src_path,
+                        "dst_dir": dst_path,
+                        "names": files
+                    },
+                    timeout=aiohttp.ClientTimeout(total=30)
+                )
+                result = move_resp.json()
+                logger.info(f"[move] 移动结果: {result}")
+                
+                if result.get("code") == 200:
+                    # 删除源目录
+                    s.post(
+                        f"{self.openlist_url}/api/fs/remove",
+                        headers=headers,
+                        json={"dir": pan_prefix, "names": [from_dir.split("/")[-1] if "/" in from_dir else from_dir]},
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    )
+                    return True
+                
+                return False
+                
+        except Exception as e:
+            logger.error(f"[move] 移动失败: {e}")
+            return False
+
     async def _move_folder(self, from_dir: str, to_dir: str) -> bool:
         """用 OpenList API 移动整个文件夹"""
         if not self.openlist_url or not self.openlist_user:
