@@ -51,7 +51,8 @@ class BaiduCurlPlugin(Star):
         self.openlist_url: str = cfg.get("openlist_url", "").rstrip("/")
         self.openlist_user: str = cfg.get("openlist_user", "")
         self.openlist_pass: str = cfg.get("openlist_pass", "")
-        self.bduss: str = cfg.get("bduss", "")
+        # 显示设置
+        self.show_curl_command: bool = cfg.get("show_curl_command", True)
         # 文件清理
         self.file_retention_hours: int = int(cfg.get("file_retention_hours", 0) or 0)
         # 缓存
@@ -157,11 +158,13 @@ class BaiduCurlPlugin(Star):
             yield ev.plain_result("🔗 获取百度直链...")
             dlinks = await self._get_dlinks(list(search_dirs), files)
             if dlinks:
-                out = ["🔧 cURL 命令:"]
-                for dl in dlinks:
-                    fn = dl["name"].replace('"', '\\"')
-                    cmd = 'curl -L -o "' + fn + '" -H "User-Agent:pan.baidu.com" "' + dl["dlink"] + '"'
-                    out.append("📄 " + dl["name"] + ":\n```\n" + cmd + "\n```")
+                out = []
+                if self.show_curl_command:
+                    out.append("🔧 cURL 命令:")
+                    for dl in dlinks:
+                        fn = dl["name"].replace('"', '\\"')
+                        cmd = 'curl -L -o "' + fn + '" -H "User-Agent:pan.baidu.com" "' + dl["dlink"] + '"'
+                        out.append("📄 " + dl["name"] + ":\n```\n" + cmd + "\n```")
                 # 4. 移动文件夹到 /来自Bot
                 move_msg = ""
                 yield ev.plain_result("📁 移动文件夹到 " + self.autosave_dir + "...")
