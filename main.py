@@ -52,6 +52,8 @@ class BaiduCurlPlugin(Star):
         self.openlist_user: str = cfg.get("openlist_user", "")
         self.openlist_pass: str = cfg.get("openlist_pass", "")
         self.bduss: str = cfg.get("bduss", "")
+        # 文件清理
+        self.file_retention_hours: int = int(cfg.get("file_retention_hours", 0) or 0)
         # 缓存
         self._access_token: str = ""
         self._token_expire: float = 0  # token 过期时间戳
@@ -180,6 +182,8 @@ class BaiduCurlPlugin(Star):
                 await self._cleanup_autosave_task(surl)
                 if has_actual_dir and save_dir and "/sharelink" not in save_dir:
                     await self._cleanup_date_dirs(save_dir)
+                # 清理 /来自Bot 中的过期文件
+                await self._cleanup_old_files()
                 
                 # 合并输出：直链 + 移动结果
                 yield ev.plain_result("\n\n".join(out) + move_msg)
@@ -198,6 +202,8 @@ class BaiduCurlPlugin(Star):
         await self._cleanup_autosave_task(surl)
         if has_actual_dir and save_dir and "/sharelink" not in save_dir:
             await self._cleanup_date_dirs(save_dir)
+        # 清理 /来自Bot 中的过期文件
+        await self._cleanup_old_files()
         
         yield ev.plain_result("💡 文件已转存，路径: " + save_dir)
 
@@ -470,6 +476,68 @@ class BaiduCurlPlugin(Star):
                 logger.info(f"[cleanup] 删除 {path}: errno={data.get('errno')}, info={data.get('info')}")
         except Exception as e:
             logger.warning(f"[cleanup] 删除目录异常: {e}")
+    
+    async def _cleanup_old_files(self):
+        """清理 /来自Bot 中超过保留时长的文件"""
+        if not self.file_retention_hours or not self._access_token:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            deleted = await loop.run_in_executor(None, self._cleanup_old_files_sync, self._access_token)
+            if deleted:
+                logger.info(f"[cleanup] 清理了 {deleted} 个过期文件")
+        except Exception as e:
+            logger.warning(f"[cleanup] 清理旧文件失败: {e}")
+    
+    def _cleanup_old_files_sync(self, at: str) -> int:
+        """同步清理过期文件（在线程池中执行）"""
+        cutoff = int(time.time()) - self.file_retention_hours * 3600
+        all_files = []
+        
+        try:
+            s = cffi_requests.Session(impersonate="chrome120")
+            
+            def _list_recursive(dir_path, depth=0):
+                if depth > 3:
+                    return
+                try:
+                    encoded = urllib.parse.quote(dir_path, safe="/")
+                    resp = s.get(
+                        f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                        timeout=15
+                    )
+                    data = resp.json()
+                    for f in data.get("list", []):
+                        if f.get("isdir"):
+                            _list_recursive(f.get("path", ""), depth + 1)
+                        else:
+                            mtime = f.get("server_mtime", 0)
+                            if mtime < cutoff:
+                                all_files.append(f.get("path", ""))
+                except Exception as e:
+                    logger.warning(f"[cleanup] 列出目录失败: {e}")
+            
+            _list_recursive(self.autosave_dir)
+            
+            if not all_files:
+                return 0
+            
+            # 批量删除过期文件
+            logger.info(f"[cleanup] 发现 {len(all_files)} 个过期文件，开始删除")
+            # 每批最多删 100 个
+            for i in range(0, len(all_files), 100):
+                batch = all_files[i:i+100]
+                filelist = json.dumps(batch)
+                url = f"https://pan.baidu.com/rest/2.0/xpan/file?method=filemanager&opera=delete&access_token={at}"
+                resp = s.post(url, data={"async": 0, "filelist": filelist, "ondup": "fail"}, timeout=30)
+                data = resp.json()
+                logger.info(f"[cleanup] 批次 {i//100+1}: errno={data.get('errno')}, info={data.get('info')}")
+            
+            return len(all_files)
+        except Exception as e:
+            logger.warning(f"[cleanup] 清理旧文件异常: {e}")
+            return 0
+    
     def _autosave_sync(self, surl: str, pwd: str) -> dict:
         """同步版本的转存，参考 media_save 插件的实现"""
         try:
