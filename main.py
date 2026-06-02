@@ -113,10 +113,13 @@ class BaiduCurlPlugin(Star):
             at = self._access_token
             extra_dirs = getattr(self, '_extra_dirs', [])
             
+            # 标记是否有明确的转存目录
+            has_actual_dir = bool(actual_dir or extra_dirs)
+            
             loop = asyncio.get_running_loop()
             files, final_dir = await loop.run_in_executor(
                 None,
-                self._scan_files_sync, at, scan_files, self.autosave_dir, save_dir, extra_dirs
+                self._scan_files_sync, at, scan_files, self.autosave_dir, save_dir, extra_dirs, has_actual_dir
             )
             # 清理临时变量
             if hasattr(self, '_extra_dirs'):
@@ -273,7 +276,7 @@ class BaiduCurlPlugin(Star):
         except Exception as e:
             logger.error(f"[autosave] 转存失败: {e}")
             return {"success": False, "error": str(e)}
-    def _scan_files_sync(self, at, scan_files, autosave_dir="/来自Bot", actual_dir=None, extra_dirs=None):
+    def _scan_files_sync(self, at, scan_files, autosave_dir="/来自Bot", actual_dir=None, extra_dirs=None, has_actual_dir=False):
         """同步扫描百度网盘文件（在线程池中调用）"""
         files = []
         save_dir = autosave_dir
@@ -287,7 +290,9 @@ class BaiduCurlPlugin(Star):
                 dirs_to_scan.append(actual_dir)
             if extra_dirs:
                 dirs_to_scan.extend(extra_dirs)
-            if autosave_dir not in dirs_to_scan:
+            
+            # 如果没有明确的转存目录，才扫描 autosave_dir
+            if not has_actual_dir and autosave_dir not in dirs_to_scan:
                 dirs_to_scan.append(autosave_dir)
             
             for scan_dir in dirs_to_scan:
@@ -302,13 +307,14 @@ class BaiduCurlPlugin(Star):
                 bot_data = bot_resp.json()
                 logger.info(f"[scan] {scan_dir} 文件数: {len(bot_data.get('list', []))}")
                 
-                # 用文件名匹配（scan_files 为 None 且有 actual_dir 时，只取 actual_dir 的文件）
+                # 用文件名匹配（有明确目录时，只取该目录的文件）
                 for f in bot_data.get("list", []):
                     fname = f.get("server_filename", "")
-                    if scan_files is not None and fname not in scan_files:
-                        continue
                     # 跳过目录
                     if f.get("isdir"):
+                        continue
+                    # 如果有明确的转存目录，不按文件名过滤
+                    if not has_actual_dir and scan_files is not None and fname not in scan_files:
                         continue
                     files.append(f.get("path", ""))
                     save_dir = scan_dir
