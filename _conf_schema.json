@@ -58,7 +58,7 @@
     "file_retention_hours": {
         "description": "文件保留时长(小时)",
         "hint": "/来自Bot 中超过此时长的文件将被自动删除。设为 0 则禁用",
-        "type": "integer",
+        "type": "int",
         "default": 0
     }
 }
