@@ -96,7 +96,7 @@ class BaiduCurlPlugin(Star):
 
         # 2. 用文件名在百度网盘里匹配
         files = []
-        save_dir = self.autosave_dir
+        save_dir = tr.get("save_dir", self.autosave_dir)
         
         # 获取 baidu-autosave 返回的文件名（用于匹配）
         autosave_files = tr.get("files", [])
@@ -122,6 +122,9 @@ class BaiduCurlPlugin(Star):
                 None,
                 self._scan_files_sync, at, scan_files, self.autosave_dir, save_dir, extra_dirs, has_actual_dir
             )
+            # 用扫描到的实际目录更新 save_dir
+            if final_dir:
+                save_dir = final_dir
             # 清理临时变量
             if hasattr(self, '_extra_dirs'):
                 del self._extra_dirs
@@ -160,7 +163,7 @@ class BaiduCurlPlugin(Star):
                 move_msg = ""
                 yield ev.plain_result("📁 移动文件夹到 " + self.autosave_dir + "...")
                 # 先移动实际转存目录（如 /2024/202402/20240205）
-                if save_dir != self.autosave_dir and not save_dir.startswith("/来自Bot"):
+                if save_dir != self.autosave_dir and not save_dir.startswith("/来自Bot") and "/sharelink" not in save_dir:
                     move_ok = await self._move_single_dir(save_dir, self.autosave_dir)
                     if move_ok:
                         move_msg += "\n\n✅ " + save_dir + " 已移动到 " + self.autosave_dir
@@ -200,11 +203,11 @@ class BaiduCurlPlugin(Star):
             async with aiohttp.ClientSession() as sess:
                 r = await sess.post(self.openlist_url + "/api/auth/login",
                     json={"username": self.openlist_user, "password": self.openlist_pass},
-                    allow_redirects=False, timeout=aiohttp.ClientTimeout(total=10))
+                    allow_redirects=False, timeout=10)
                 admin_token = (await r.json()).get("data", {}).get("token", "")
 
                 r2 = await sess.get(self.openlist_url + "/api/admin/storage/list",
-                    headers={"Authorization": admin_token}, timeout=aiohttp.ClientTimeout(total=10))
+                    headers={"Authorization": admin_token}, timeout=10)
                 for s in (await r2.json()).get("data", {}).get("content", []):
                     if "Baidu" in s.get("driver", ""):
                         a = json.loads(s.get("addition", "{}"))
@@ -328,6 +331,10 @@ class BaiduCurlPlugin(Star):
                     files.append(f.get("path", ""))
                     save_dir = scan_dir
                     logger.info(f"[scan] 匹配到文件: {fname}")
+                
+                # 如果是 actual_dir 且找到了文件，不需要继续扫描其他目录
+                if files and scan_dir == actual_dir:
+                    break
             
             # 搜索根目录的 sharelink 文件夹（不管有没有明确目录都要搜）
             if not files or has_actual_dir:
@@ -355,57 +362,53 @@ class BaiduCurlPlugin(Star):
                             save_dir = item["path"]
                             logger.info(f"[scan] 匹配到文件: {fname} (在 {item['path']})")
             
-            for scan_dir in dirs_to_scan:
-                if files:
-                    break
-                logger.info(f"[scan] 扫描目录: {scan_dir}")
-                bot_encoded = urllib.parse.quote(scan_dir, safe="/")
-                bot_resp = s.get(
-                    f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={bot_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                    timeout=15
-                )
-                bot_data = bot_resp.json()
-                logger.info(f"[scan] {scan_dir} 文件数: {len(bot_data.get('list', []))}")
-                
-                # 用文件名匹配（有明确目录时，只取该目录的文件）
-                for f in bot_data.get("list", []):
-                    fname = f.get("server_filename", "")
-                    # 跳过目录
-                    if f.get("isdir"):
-                        continue
-                    # 如果有明确的转存目录，不按文件名过滤
-                    if not has_actual_dir and scan_files is not None and fname not in scan_files:
-                        continue
-                    files.append(f.get("path", ""))
-                    save_dir = scan_dir
-                    logger.info(f"[scan] 匹配到文件: {fname}")
-                
-                # 如果是 actual_dir 且找到了文件，不需要继续扫描其他目录
-                if files and scan_dir == actual_dir:
-                    break
-            
-            # 搜索根目录的 sharelink 文件夹
-            if not files:
-                logger.info(f"[scan] /来自Bot 没找到，搜索根目录 sharelink")
-                root_resp = s.get(
-                    f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir=/&dlink=1&web=1&app_id=250528&access_token={at}",
-                    timeout=15
-                )
-                root_data = root_resp.json()
+            # 搜索根目录的日期文件夹（autosave 可能同时创建日期目录和 sharelink）
+            if has_actual_dir:
+                logger.info(f"[scan] 搜索根目录日期文件夹")
                 for item in root_data.get("list", []):
-                    if item.get("isdir") and "sharelink" in item.get("path", ""):
-                        sub_encoded = urllib.parse.quote(item["path"], safe="/")
-                        sub_resp = s.get(
-                            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                            timeout=15
-                        )
-                        sub_data = sub_resp.json()
-                        for f in sub_data.get("list", []):
-                            fname = f.get("server_filename", "")
-                            if scan_files is None or fname in scan_files:
-                                files.append(f.get("path", ""))
-                                save_dir = item["path"]
-                                logger.info(f"[scan] 匹配到文件: {fname} (在 {item['path']})")
+                    path = item.get("path", "")
+                    name = path.rstrip("/").split("/")[-1]
+                    if item.get("isdir") and re.match(r'^\d{4}$', name) and "/sharelink" not in path and path != "/来自Bot":
+                        try:
+                            encoded = urllib.parse.quote(path, safe="/")
+                            sub_resp = s.get(
+                                f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                                timeout=15
+                            )
+                            sub_data = sub_resp.json()
+                            for f in sub_data.get("list", []):
+                                fname = f.get("server_filename", "")
+                                if f.get("isdir"):
+                                    # 递归进入子目录（最多 3 层）
+                                    sub2_encoded = urllib.parse.quote(f["path"], safe="/")
+                                    sub2_resp = s.get(
+                                        f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub2_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                                        timeout=15
+                                    )
+                                    sub2_data = sub2_resp.json()
+                                    for f2 in sub2_data.get("list", []):
+                                        if f2.get("isdir"):
+                                            sub3_encoded = urllib.parse.quote(f2["path"], safe="/")
+                                            sub3_resp = s.get(
+                                                f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub3_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                                                timeout=15
+                                            )
+                                            sub3_data = sub3_resp.json()
+                                            for f3 in sub3_data.get("list", []):
+                                                if not f3.get("isdir"):
+                                                    files.append(f3.get("path", ""))
+                                                    save_dir = f2["path"]
+                                                    logger.info(f"[scan] 匹配到文件(日期目录): {f3.get('server_filename','')}")
+                                        else:
+                                            files.append(f2.get("path", ""))
+                                            save_dir = f["path"]
+                                            logger.info(f"[scan] 匹配到文件(日期目录): {f2.get('server_filename','')}")
+                                else:
+                                    files.append(f.get("path", ""))
+                                    save_dir = path
+                                    logger.info(f"[scan] 匹配到文件(日期目录): {fname}")
+                        except Exception as e:
+                            logger.warning(f"[scan] 日期目录扫描错误: {e}")
             
             # 搜索 /来自Bot 的子目录
             if not files:
@@ -542,7 +545,6 @@ class BaiduCurlPlugin(Star):
                             save_dir = "/" + parts[0]
                     elif "转存到" in msg:
                         # 从消息里提取所有转存目录（支持多种格式）
-                        import re
                         matches = re.findall(r'转存到(?:目录)?\s+(/\S+)', msg)
                         if matches:
                             # 取第一个目录作为主要目录
@@ -586,7 +588,7 @@ class BaiduCurlPlugin(Star):
             
             # 返回成功，files 里保存文件名（用于后续匹配）
             file_names = [f.split("/")[-1] if "/" in f else f for f in transferred_files]
-            return {"success": True, "files": file_names, "save_dir": self.autosave_dir}
+            return {"success": True, "files": file_names, "save_dir": save_dir}
         except Exception as e:
             logger.error(f"[autosave] 转存失败: {e}")
             return {"success": False, "error": str(e)}
@@ -633,7 +635,7 @@ class BaiduCurlPlugin(Star):
                     f"{self.openlist_url}/api/fs/list",
                     headers=headers,
                     json={"path": src_path, "page": 1, "per_page": 100, "refresh": True},
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    timeout=10
                 )
                 data = resp.json()
                 
@@ -656,7 +658,7 @@ class BaiduCurlPlugin(Star):
                     f"{self.openlist_url}/api/fs/mkdir",
                     headers=headers,
                     json={"path": dst_path},
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    timeout=10
                 )
                 
                 # 移动文件
@@ -668,19 +670,26 @@ class BaiduCurlPlugin(Star):
                         "dst_dir": dst_path,
                         "names": files
                     },
-                    timeout=aiohttp.ClientTimeout(total=30)
+                    timeout=30
                 )
                 result = move_resp.json()
                 logger.info(f"[move] 移动结果: {result}")
                 
                 if result.get("code") == 200:
-                    # 删除源目录
-                    s.post(
-                        f"{self.openlist_url}/api/fs/remove",
-                        headers=headers,
-                        json={"dir": pan_prefix, "names": [from_dir.split("/")[-1] if "/" in from_dir else from_dir]},
-                        timeout=aiohttp.ClientTimeout(total=10)
-                    )
+                    # 删除源目录（从正确的父目录中删除，并递归清理空目录）
+                    parts = from_dir.strip("/").split("/")
+                    # 从最深目录向上逐级删除空目录
+                    for i in range(len(parts), 0, -1):
+                        parent = "/" + "/".join(parts[:i-1]) if i > 1 else ""
+                        name = parts[i-1]
+                        parent_path = pan_prefix + parent
+                        s.post(
+                            f"{self.openlist_url}/api/fs/remove",
+                            headers=headers,
+                            json={"dir": parent_path, "names": [name]},
+                            timeout=10
+                        )
+                        logger.info(f"[move] 删除目录: {parent_path}/{name}")
                     return True
                 
                 return False
@@ -731,7 +740,7 @@ class BaiduCurlPlugin(Star):
                 f"{self.openlist_url}/api/fs/list",
                 headers=headers,
                 json={"path": f"{pan_prefix}/", "page": 1, "per_page": 100, "refresh": True},
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=10
             )
             data = resp.json()
             
@@ -772,7 +781,7 @@ class BaiduCurlPlugin(Star):
                 f"{self.openlist_url}/api/fs/list",
                 headers=headers,
                 json={"path": src_path, "page": 1, "per_page": 100, "refresh": True},
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=10
             )
             data2 = resp2.json()
             
@@ -789,7 +798,7 @@ class BaiduCurlPlugin(Star):
                 f"{self.openlist_url}/api/fs/mkdir",
                 headers=headers,
                 json={"path": dst_path},
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=10
             )
             
             # 移动所有文件
@@ -801,7 +810,7 @@ class BaiduCurlPlugin(Star):
                     "dst_dir": dst_path,
                     "names": files
                 },
-                timeout=aiohttp.ClientTimeout(total=30)
+                timeout=30
             )
             result = move_resp.json()
             logger.info(f"[move] 移动结果: {result}")
@@ -814,7 +823,7 @@ class BaiduCurlPlugin(Star):
                     f"{self.openlist_url}/api/fs/remove",
                     headers=headers,
                     json={"dir": f"{pan_prefix}", "names": [newest_dir["name"]]},
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    timeout=10
                 )
                 logger.info(f"[move] 已删除源目录: {newest_dir['name']}")
                 return True
@@ -825,7 +834,7 @@ class BaiduCurlPlugin(Star):
                     f"{self.openlist_url}/api/fs/remove",
                     headers=headers,
                     json={"dir": f"{pan_prefix}", "names": [newest_dir["name"]]},
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    timeout=10
                 )
                 return True
             return False
@@ -882,7 +891,7 @@ class BaiduCurlPlugin(Star):
                     "dst_dir": dst_dir,
                     "names": names
                 },
-                timeout=aiohttp.ClientTimeout(total=30)
+                timeout=30
             )
             result = resp.json()
             logger.info(f"[move] 移动结果: {result}")
