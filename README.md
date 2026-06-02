@@ -2,6 +2,50 @@
 
 > 发送百度网盘分享链接，自动转存、提取直链并整理文件
 
+## 📦 安装方法
+
+### 方法一：通过 AstrBot 插件市场安装（推荐）
+
+1. 打开 AstrBot 管理面板（默认 `http://localhost:6185`）
+2. 进入 **插件管理** 页面
+3. 点击 **插件市场** 标签
+4. 搜索 `百度网盘` 或 `baidu_curl`
+5. 找到 **百度网盘cURL下载助手**，点击 **安装**
+6. 安装完成后重启 AstrBot
+
+### 方法二：通过 GitHub 仓库安装
+
+```bash
+# 进入 AstrBot 插件目录
+cd /AstrBot/data/plugins/
+
+# 克隆插件仓库
+git clone https://github.com/jichie/astrbot_plugin_baidu_curl.git
+
+# 重启 AstrBot
+```
+
+### 方法三：手动安装
+
+1. 下载插件代码：
+   - 点击 [Releases](https://github.com/jichie/astrbot_plugin_baidu_curl/releases) 下载最新版本
+   - 或者点击页面右上角 **Code** → **Download ZIP**
+
+2. 解压到 AstrBot 插件目录：
+   ```
+   /AstrBot/data/plugins/astrbot_plugin_baidu_curl/
+   ```
+
+3. 安装依赖：
+   ```bash
+   cd /AstrBot/data/plugins/astrbot_plugin_baidu_curl/
+   pip install -r requirements.txt
+   ```
+
+4. 重启 AstrBot
+
+---
+
 ## ✨ 功能
 
 - 📦 **自动转存** - 调用 baidu-autosave 转存分享文件到自己网盘
@@ -20,6 +64,8 @@
 | **OpenList/AList** | 获取 refresh_token 凭证 | [GitHub](https://github.com/AlistGo/alist) |
 
 ## ⚙️ 配置项
+
+安装完成后，在 AstrBot 管理面板中配置以下参数：
 
 | 配置项 | 说明 | 示例 |
 |--------|------|------|
@@ -66,9 +112,7 @@ https://pan.baidu.com/s/1xxxxxxx 提取码:xxxx
 🔧 cURL 命令:
 
 📄 文件名.flac:
-​```
 curl -L -o "文件名.flac" -H "User-Agent:pan.baidu.com" "https://d.pcs.baidu.com/file/xxx..."
-​```
 ```
 
 ## 📝 cURL 命令格式
@@ -120,3 +164,7 @@ A: 检查 OpenList 的百度网盘挂载路径是否正确。
 - 🐛 修复 OpenList API 调用方式
 - 🐛 修复 URL 编码问题
 - 📝 更新 README 文档
+
+## 📜 许可证
+
+MIT License
