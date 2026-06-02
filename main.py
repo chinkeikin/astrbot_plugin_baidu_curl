@@ -108,14 +108,14 @@ class BaiduCurlPlugin(Star):
         await asyncio.sleep(5)
         
         # 用百度网盘 API 扫描并匹配文件（在线程池中执行避免阻塞）
+        extra_dirs = getattr(self, '_extra_dirs', [])
+        has_actual_dir = bool(save_dir != self.autosave_dir or extra_dirs)
+        
         token_ok = await self._refresh_access_token()
         if token_ok and self._access_token:
             scan_files = autosave_files if autosave_files else None
             at = self._access_token
-            extra_dirs = getattr(self, '_extra_dirs', [])
             
-            # 标记是否有明确的转存目录
-            has_actual_dir = bool(save_dir != self.autosave_dir or extra_dirs)
             logger.info(f"[scan] save_dir={save_dir}, autosave_dir={self.autosave_dir}, has_actual_dir={has_actual_dir}, extra_dirs={extra_dirs}")
             
             loop = asyncio.get_running_loop()
@@ -176,8 +176,10 @@ class BaiduCurlPlugin(Star):
                 elif not move_msg:
                     move_msg = "\n\n⚠️ 移动失败"
                 
-                # 5. 清理 baidu-autosave 任务
+                # 5. 清理 baidu-autosave 任务和空日期目录
                 await self._cleanup_autosave_task(surl)
+                if has_actual_dir and save_dir and "/sharelink" not in save_dir:
+                    await self._cleanup_date_dirs(save_dir)
                 
                 # 合并输出：直链 + 移动结果
                 yield ev.plain_result("\n\n".join(out) + move_msg)
@@ -194,6 +196,8 @@ class BaiduCurlPlugin(Star):
         
         # 清理任务
         await self._cleanup_autosave_task(surl)
+        if has_actual_dir and save_dir and "/sharelink" not in save_dir:
+            await self._cleanup_date_dirs(save_dir)
         
         yield ev.plain_result("💡 文件已转存，路径: " + save_dir)
 
@@ -441,6 +445,31 @@ class BaiduCurlPlugin(Star):
         
         logger.info(f"[scan] 最终文件: {files}, 目录: {save_dir}")
         return files, save_dir
+    async def _cleanup_date_dirs(self, dir_path: str):
+        """用百度 API 逐级删除空日期目录（OpenList 可能无法访问这些路径）"""
+        if not self._access_token:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._cleanup_date_dirs_sync, dir_path, self._access_token)
+        except Exception as e:
+            logger.warning(f"[cleanup] 清理目录失败: {e}")
+    
+    def _cleanup_date_dirs_sync(self, dir_path: str, at: str):
+        """同步清理日期目录（在线程池中执行）"""
+        try:
+            s = cffi_requests.Session(impersonate="chrome120")
+            parts = dir_path.strip("/").split("/")
+            # 从最深目录向上逐级尝试删除
+            for i in range(len(parts), 0, -1):
+                path = "/" + "/".join(parts[:i])
+                filelist = json.dumps([path])
+                url = f"https://pan.baidu.com/rest/2.0/xpan/file?method=filemanager&opera=delete&access_token={at}"
+                resp = s.post(url, data={"async": 0, "filelist": filelist, "ondup": "fail"}, timeout=15)
+                data = resp.json()
+                logger.info(f"[cleanup] 删除 {path}: errno={data.get('errno')}, info={data.get('info')}")
+        except Exception as e:
+            logger.warning(f"[cleanup] 删除目录异常: {e}")
     def _autosave_sync(self, surl: str, pwd: str) -> dict:
         """同步版本的转存，参考 media_save 插件的实现"""
         try:
