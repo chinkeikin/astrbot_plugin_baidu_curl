@@ -115,7 +115,7 @@ class BaiduCurlPlugin(Star):
             loop = asyncio.get_running_loop()
             files, save_dir = await loop.run_in_executor(
                 None,
-                self._scan_files_sync, at, scan_files
+                self._scan_files_sync, at, scan_files, self.autosave_dir
             )
         
         if not files:
@@ -204,8 +204,11 @@ class BaiduCurlPlugin(Star):
         s = cffi_requests.Session(impersonate="chrome120")
         at = self._access_token
         all_files = []
-        def _list_dir(dir_path):
-            """递归列出目录下所有文件"""
+        def _list_dir(dir_path, depth=0):
+            """递归列出目录下所有文件（最大深度 3 层）"""
+            if depth > 3:
+                logger.warning(f"[dlink] 跳过深层目录: {dir_path}")
+                return
             try:
                 encoded_path = urllib.parse.quote(dir_path)
                 url = f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={encoded_path}&dlink=1&web=1&app_id=250528&access_token={at}"
@@ -216,7 +219,7 @@ class BaiduCurlPlugin(Star):
                     return
                 for f in data.get("list", []):
                     if f.get("isdir"):
-                        _list_dir(f.get("path", ""))
+                        _list_dir(f.get("path", ""), depth + 1)
                     else:
                         all_files.append(f)
             except Exception as e:
@@ -266,16 +269,16 @@ class BaiduCurlPlugin(Star):
         except Exception as e:
             logger.error(f"[autosave] 转存失败: {e}")
             return {"success": False, "error": str(e)}
-    def _scan_files_sync(self, at, scan_files):
+    def _scan_files_sync(self, at, scan_files, autosave_dir="/来自Bot"):
         """同步扫描百度网盘文件（在线程池中调用）"""
         files = []
-        save_dir = "/来自Bot"
+        save_dir = autosave_dir
         
         try:
             s = cffi_requests.Session(impersonate="chrome120")
             
             # 扫描 /来自Bot 目录
-            bot_encoded = urllib.parse.quote("/来自Bot", safe="/")
+            bot_encoded = urllib.parse.quote(autosave_dir, safe="/")
             bot_resp = s.get(
                 f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={bot_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
                 timeout=15
@@ -288,7 +291,7 @@ class BaiduCurlPlugin(Star):
                 fname = f.get("server_filename", "")
                 if scan_files is None or fname in scan_files:
                     files.append(f.get("path", ""))
-                    save_dir = "/来自Bot"
+                    save_dir = autosave_dir
                     logger.info(f"[scan] 匹配到文件: {fname}")
             
             # 搜索根目录的 sharelink 文件夹
