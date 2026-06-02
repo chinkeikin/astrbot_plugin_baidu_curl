@@ -362,13 +362,12 @@ class BaiduCurlPlugin(Star):
                             save_dir = item["path"]
                             logger.info(f"[scan] 匹配到文件: {fname} (在 {item['path']})")
             
-            # 搜索根目录的日期文件夹（autosave 可能同时创建日期目录和 sharelink）
+            # 搜索根目录的其他文件夹（autosave 可能创建日期目录如 /2024 或 /分享等）
             if has_actual_dir:
-                logger.info(f"[scan] 搜索根目录日期文件夹")
+                logger.info(f"[scan] 搜索根目录其他文件夹")
                 for item in root_data.get("list", []):
                     path = item.get("path", "")
-                    name = path.rstrip("/").split("/")[-1]
-                    if item.get("isdir") and re.match(r'^\d{4}$', name) and "/sharelink" not in path and path != "/来自Bot":
+                    if item.get("isdir") and "/sharelink" not in path and path not in ("/来自Bot", "/apps"):
                         try:
                             encoded = urllib.parse.quote(path, safe="/")
                             sub_resp = s.get(
