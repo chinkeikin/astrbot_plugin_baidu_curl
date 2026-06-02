@@ -114,7 +114,7 @@ class BaiduCurlPlugin(Star):
             extra_dirs = getattr(self, '_extra_dirs', [])
             
             # 标记是否有明确的转存目录
-            has_actual_dir = bool(actual_dir or extra_dirs)
+            has_actual_dir = bool(save_dir != self.autosave_dir or extra_dirs)
             
             loop = asyncio.get_running_loop()
             files, final_dir = await loop.run_in_executor(
