@@ -115,6 +115,7 @@ class BaiduCurlPlugin(Star):
             
             # 标记是否有明确的转存目录
             has_actual_dir = bool(save_dir != self.autosave_dir or extra_dirs)
+            logger.info(f"[scan] save_dir={save_dir}, autosave_dir={self.autosave_dir}, has_actual_dir={has_actual_dir}, extra_dirs={extra_dirs}")
             
             loop = asyncio.get_running_loop()
             files, final_dir = await loop.run_in_executor(
@@ -540,9 +541,9 @@ class BaiduCurlPlugin(Star):
                         if len(parts) > 1:
                             save_dir = "/" + parts[0]
                     elif "转存到" in msg:
-                        # 从消息里提取所有转存目录
+                        # 从消息里提取所有转存目录（支持多种格式）
                         import re
-                        matches = re.findall(r'转存到目录\s+(/\S+)', msg)
+                        matches = re.findall(r'转存到(?:目录)?\s+(/\S+)', msg)
                         if matches:
                             # 取第一个目录作为主要目录
                             save_dir = matches[0]
