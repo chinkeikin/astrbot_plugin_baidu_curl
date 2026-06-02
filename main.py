@@ -296,13 +296,21 @@ class BaiduCurlPlugin(Star):
                 bot_data = bot_resp.json()
                 logger.info(f"[scan] {scan_dir} 文件数: {len(bot_data.get('list', []))}")
                 
-                # 用文件名匹配
+                # 用文件名匹配（scan_files 为 None 且有 actual_dir 时，只取 actual_dir 的文件）
                 for f in bot_data.get("list", []):
                     fname = f.get("server_filename", "")
-                    if scan_files is None or fname in scan_files:
-                        files.append(f.get("path", ""))
-                        save_dir = scan_dir
-                        logger.info(f"[scan] 匹配到文件: {fname}")
+                    if scan_files is not None and fname not in scan_files:
+                        continue
+                    # 跳过目录
+                    if f.get("isdir"):
+                        continue
+                    files.append(f.get("path", ""))
+                    save_dir = scan_dir
+                    logger.info(f"[scan] 匹配到文件: {fname}")
+                
+                # 如果是 actual_dir 且找到了文件，不需要继续扫描其他目录
+                if files and scan_dir == actual_dir:
+                    break
             
             # 搜索根目录的 sharelink 文件夹
             if not files:
