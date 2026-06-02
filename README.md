@@ -16,9 +16,11 @@
 - 🔗 **提取直链** - 通过 filemetas API 获取百度直链
 - 🔧 **生成命令** - 生成完整的 cURL 下载命令
 - 🔑 **自动刷新** - 从 OpenList 获取并刷新 OAuth token
-- 📁 **文件整理** - 自动将 sharelink 文件夹移动到指定目录
-- 🧹 **任务清理** - 完成后自动清理 baidu-autosave 任务
-- 🔄 **智能匹配** - 支持转存到根目录或 `/来自Bot` 目录的文件
+- 📁 **文件整理** - 自动移动 sharelink 及日期目录到 `/来自Bot`
+- 🧹 **任务清理** - 完成后自动清理 baidu-autosave 任务和空目录
+- ⏱️ **时间过滤** - 基于 `server_mtime` 只匹配本次转存的文件，防止提取旧文件
+- 🔍 **智能扫描** - 自动发现 autosave 创建的 sharelink 和日期目录
+- 🗑️ **过期清理** - 可配置自动删除 `/来自Bot` 中超过保留时长的文件
 
 ## 📋 前置依赖
 
@@ -40,8 +42,10 @@
 | `openlist_url` | OpenList 地址 | `http://192.168.1.207:7344` |
 | `openlist_user` | OpenList 用户名 | `admin` |
 | `openlist_pass` | OpenList 密码 | - |
+| `openlist_pan_path` | OpenList 百度网盘挂载路径 | `/百度` |
 | `show_curl_command` | 显示 cURL 命令 | `true` |
 | `allow_sessions` | 允许的会话列表 | 留空则所有会话可用 |
+| `file_retention_hours` | 文件保留时长（小时） | `24`（0 = 禁用自动清理） |
 
 ## 🚀 使用方法
 
@@ -55,12 +59,13 @@ https://pan.baidu.com/s/1xxxxxxx 提取码:xxxx
 
 1. 📦 调用 baidu-autosave 转存文件
 2. ⏳ 等待转存完成（5秒）
-3. 🔍 从百度网盘扫描实际文件
+3. 🔍 从百度网盘扫描实际文件（时间过滤 + 智能目录发现）
 4. 🔑 刷新百度 access_token
 5. 🔗 提取百度直链
-6. 📁 移动 sharelink 文件夹到 `/来自Bot`
-7. 🧹 清理 baidu-autosave 任务
-8. 🔧 输出 cURL 下载命令
+6. 📁 移动 sharelink 和日期目录到 `/来自Bot`
+7. 🧹 清理 baidu-autosave 任务和空目录
+8. 🗑️ 清理 `/来自Bot` 中的过期文件（如已配置）
+9. 🔧 输出 cURL 下载命令
 
 ## 📝 输出示例
 
@@ -94,10 +99,11 @@ curl -L -o "文件名.mp4" \
 ## 🔧 工作原理
 
 1. **转存文件** - 通过 baidu-autosave API 添加并执行转存任务
-2. **扫描文件** - 使用百度网盘 API 扫描实际文件（不依赖缓存）
+2. **扫描文件** - 使用百度网盘 API 扫描实际文件，通过 `server_mtime` 时间过滤避免匹配旧文件
 3. **提取直链** - 通过 filemetas API 获取下载直链
-4. **移动文件** - 通过 OpenList API 移动 sharelink 文件夹
-5. **清理任务** - 删除 baidu-autosave 中的任务记录
+4. **移动文件** - 通过 OpenList API 移动 sharelink 文件夹；通过百度 filemanager API 清理空目录
+5. **过期清理** - 扫描 `/来自Bot`，删除超过 `file_retention_hours` 的文件
+6. **清理任务** - 删除 baidu-autosave 中的任务记录
 
 ## ⚠️ 注意事项
 
@@ -106,11 +112,12 @@ curl -L -o "文件名.mp4" \
 - baidu-autosave 需要配置好百度网盘 cookies
 - OpenList 需要挂载百度网盘
 - 文件会自动整理到 `autosave_dir` 目录下
+- 过期文件清理需设置 `file_retention_hours > 0`
 
 ## 🐛 常见问题
 
 **Q: 转存成功但没找到文件？**
-A: 插件会自动扫描百度网盘查找文件，支持根目录和子目录。
+A: 插件会自动扫描百度网盘查找文件（包括 sharelink 和日期目录），并通过时间过滤确保只匹配本次转存的文件。
 
 **Q: 直链提取失败？**
 A: 检查 OpenList 配置是否正确，确保百度网盘已挂载。
@@ -118,9 +125,25 @@ A: 检查 OpenList 配置是否正确，确保百度网盘已挂载。
 **Q: 文件没有移动到指定目录？**
 A: 检查 OpenList 的百度网盘挂载路径是否正确。
 
+**Q: 转存后提取了旧文件？**
+A: v7.1+ 已通过 `server_mtime` 时间过滤解决，只匹配本次转存期间创建的文件。
+
 ## 📄 更新日志
 
-### v7 (2026-06-01)
+### v7.1 (2026-06-02)
+- ✨ 新增 `server_mtime` 时间过滤，防止匹配网盘旧文件
+- ✨ 新增智能目录扫描，自动发现 autosave 创建的日期目录和 sharelink
+- ✨ 新增 `/来自Bot` 过期文件自动清理（通过 `file_retention_hours` 配置）
+- ✨ 新增 `openlist_pan_path` 配置项
+- 🐛 修复 `save_dir` 未更新导致路径显示错误
+- 🐛 修复 `_scan_files_sync` 中重复扫描代码
+- 🐛 修复同步方法中 `aiohttp.ClientTimeout` 传参不兼容
+- 🐛 修复 autosave 转存目录未被正确返回
+- 🐛 修复 sharelink 文件夹误走 `_move_single_dir`
+- 🐛 修复目录删除路径错误，支持逐级清理空目录
+- 📝 更新 README 文档
+
+### v7.0 (2026-06-01)
 - ✨ 新增自动移动 sharelink 文件夹功能
 - ✨ 新增自动清理 baidu-autosave 任务
 - ✨ 支持扫描根目录和 `/来自Bot` 目录的文件
