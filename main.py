@@ -295,6 +295,58 @@ class BaiduCurlPlugin(Star):
             if not has_actual_dir and autosave_dir not in dirs_to_scan:
                 dirs_to_scan.append(autosave_dir)
             
+            # 扫描指定目录
+            for scan_dir in dirs_to_scan:
+                if files:
+                    break
+                logger.info(f"[scan] 扫描目录: {scan_dir}")
+                bot_encoded = urllib.parse.quote(scan_dir, safe="/")
+                bot_resp = s.get(
+                    f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={bot_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                    timeout=15
+                )
+                bot_data = bot_resp.json()
+                logger.info(f"[scan] {scan_dir} 文件数: {len(bot_data.get('list', []))}")
+                
+                # 用文件名匹配（有明确目录时，只取该目录的文件）
+                for f in bot_data.get("list", []):
+                    fname = f.get("server_filename", "")
+                    # 跳过目录
+                    if f.get("isdir"):
+                        continue
+                    # 如果有明确的转存目录，不按文件名过滤
+                    if not has_actual_dir and scan_files is not None and fname not in scan_files:
+                        continue
+                    files.append(f.get("path", ""))
+                    save_dir = scan_dir
+                    logger.info(f"[scan] 匹配到文件: {fname}")
+            
+            # 搜索根目录的 sharelink 文件夹（不管有没有明确目录都要搜）
+            if not files or has_actual_dir:
+                logger.info(f"[scan] 搜索根目录 sharelink")
+                root_resp = s.get(
+                    f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir=/&dlink=1&web=1&app_id=250528&access_token={at}",
+                    timeout=15
+                )
+                root_data = root_resp.json()
+                for item in root_data.get("list", []):
+                    if item.get("isdir") and "sharelink" in item.get("path", ""):
+                        sub_encoded = urllib.parse.quote(item["path"], safe="/")
+                        sub_resp = s.get(
+                            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                            timeout=15
+                        )
+                        sub_data = sub_resp.json()
+                        for f in sub_data.get("list", []):
+                            fname = f.get("server_filename", "")
+                            if f.get("isdir"):
+                                continue
+                            if not has_actual_dir and scan_files is not None and fname not in scan_files:
+                                continue
+                            files.append(f.get("path", ""))
+                            save_dir = item["path"]
+                            logger.info(f"[scan] 匹配到文件: {fname} (在 {item['path']})")
+            
             for scan_dir in dirs_to_scan:
                 if files:
                     break
