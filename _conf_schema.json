@@ -6,8 +6,8 @@
         "default": true
     },
     "allow_sessions": {
-        "description": "允许的会话",
-        "hint": "留空则所有会话可用",
+        "description": "允许的会话（白名单）",
+        "hint": "⚠️ 为防止凭证泄露，默认不启用任何会话。请在此添加允许的 session_id（如群号/用户ID）。留空则所有会话均被阻止！",
         "type": "list",
         "default": []
     },
