@@ -77,11 +77,11 @@ class BaiduCurlPlugin(Star):
             if event.session_id not in self.allow_sessions:
                 return
         else:
-            yield event.plain_result("⚠️ 插件未配置允许的会话，已自动阻止。
-"
-                "请在 设置 → allow_sessions 中添加允许的 session_id。
-"
-                "⚠️ 严禁在所有会话下开放此插件，否则可能导致百度凭据泄露！")
+            yield event.plain_result(
+                "⚠️ 插件未配置允许的会话，已自动阻止。\n"
+                "请在 设置 → allow_sessions 中添加允许的 session_id。\n"
+                "⚠️ 严禁在所有会话下开放此插件，否则可能导致百度凭据泄露！"
+            )
             return
         if not self.autosave_url:
             yield event.plain_result("⚠️ 未配置 baidu-autosave")
