@@ -1,5 +1,15 @@
 # Changelog
 
+## v8.1.0 (2026-06-28)
+
+### 变更
+- 移除 baidu-autosave 依赖及相关代码，仅保留内置转存模式
+- 移除 `transfer_mode`、`autosave_url`、`autosave_user`、`autosave_pass` 配置项
+- `autosave_dir` 更名为 `save_dir`
+- 移除 `_autosave`、`_autosave_sync`、`_cleanup_autosave_task`、`_cleanup_sync` 方法
+
+---
+
 ## v8.0.0 (2026-06-28)
 
 ### 新增

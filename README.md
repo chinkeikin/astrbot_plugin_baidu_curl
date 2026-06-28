@@ -12,29 +12,24 @@
 
 ## ✨ 功能
 
-- 📦 **自动转存** - 支持内置转存（BDUSS Cookie）或 baidu-autosave 两种模式
+- 📦 **内置转存** - 直接用百度网盘 Cookie 转存分享文件到自己网盘，无需额外服务
 - 🔗 **提取直链** - 通过 filemetas API 获取百度直链
 - 🔧 **生成命令** - 生成完整的 cURL 下载命令
 - 🔑 **自动刷新** - 从 OpenList 获取并刷新 OAuth token
 - 📁 **文件整理** - 自动移动 sharelink 及日期目录到 `/来自Bot`
-- 🧹 **任务清理** - 完成后自动清理 baidu-autosave 任务和空目录
 - ⏱️ **时间过滤** - 基于 `server_mtime` 只匹配本次转存的文件，防止提取旧文件
-- 🔍 **智能扫描** - 自动发现 autosave 创建的 sharelink 和日期目录
+- 🔍 **智能扫描** - 自动发现 sharelink 和日期目录
 - 🗑️ **过期清理** - 可配置自动删除 `/来自Bot` 中超过保留时长的文件
 - 📂 **多文件选择** - 转存后如有多个文件，可让用户选择要提取直链的文件
 
 ## 📋 前置依赖
 
-### 转存模式（二选一）
-
-| 模式 | 说明 | 配置 |
+| 服务 | 用途 | 说明 |
 |------|------|------|
-| **内置转存**（默认） | 直接用百度网盘 Cookie 转存，无需额外服务 | `baidu_cookies`（粘贴完整 Cookie 即可） |
-| **baidu-autosave** | 调用 baidu-autosave 服务转存 | `autosave_url` + `autosave_user` + `autosave_pass` |
+| **百度网盘 Cookie** | 转存文件 | 填入 `baidu_cookies` 配置项 |
+| **OpenList/AList** | 获取 refresh_token 凭证 | [GitHub](https://github.com/AlistGo/alist) |
 
-> 通过 `transfer_mode` 配置项切换：`builtin` 或 `autosave`
-
-### 获取 Cookie（内置转存模式）
+### 获取 Cookie
 
 1. 浏览器登录 [pan.baidu.com](https://pan.baidu.com)
 2. 按 F12 打开开发者工具
@@ -42,24 +37,14 @@
 4. 复制完整 Cookie 字符串，粘贴到 `baidu_cookies` 配置项
 5. 插件会自动提取 BDUSS 和 STOKEN
 
-### 其他依赖
-
-| 服务 | 用途 | 部署方式 |
-|------|------|---------|
-| **OpenList/AList** | 获取 refresh_token 凭证 | [GitHub](https://github.com/AlistGo/alist) |
-
 ## ⚙️ 配置项
 
 安装完成后，在 AstrBot 管理面板中配置以下参数：
 
 | 配置项 | 说明 | 示例 |
 |--------|------|------|
-| `transfer_mode` | 转存模式 | `builtin`（默认）或 `autosave` |
-| `baidu_cookies` | 百度网盘 Cookie（内置模式用） | 粘贴完整 Cookie 字符串 |
-| `autosave_url` | baidu-autosave 地址（autosave 模式用） | `http://192.168.1.207:5000` |
-| `autosave_user` | baidu-autosave 用户名 | `admin` |
-| `autosave_pass` | baidu-autosave 密码 | - |
-| `autosave_dir` | 转存目标目录 | `/来自Bot` |
+| `baidu_cookies` | 百度网盘 Cookie | 粘贴完整 Cookie 字符串 |
+| `save_dir` | 转存目标目录 | `/来自Bot` |
 | `openlist_url` | OpenList 地址 | `http://192.168.1.207:7344` |
 | `openlist_user` | OpenList 用户名 | `admin` |
 | `openlist_pass` | OpenList 密码 | - |
@@ -79,14 +64,14 @@ https://pan.baidu.com/s/1xxxxxxx 提取码:xxxx
 
 插件会自动完成以下流程：
 
-1. 📦 调用 baidu-autosave 转存文件
+1. 📦 用百度网盘 Cookie 转存文件
 2. ⏳ 等待转存完成（5秒）
 3. 🔍 从百度网盘扫描实际文件（时间过滤 + 智能目录发现）
 4. 📂 如有多个文件且开启 `enable_file_selection`，列出编号列表等待用户选择
 5. 🔑 刷新百度 access_token
 6. 🔗 提取百度直链（仅对选中的文件）
 7. 📁 移动 sharelink 和日期目录到 `/来自Bot`
-8. 🧹 清理 baidu-autosave 任务和空目录
+8. 🧹 清理空目录
 9. 🗑️ 清理 `/来自Bot` 中的过期文件（如已配置）
 10. 🔧 输出 cURL 下载命令
 
@@ -147,20 +132,19 @@ curl -L -o "文件名.mp4" \
 
 ## 🔧 工作原理
 
-1. **转存文件** - 通过 baidu-autosave API 添加并执行转存任务
+1. **转存文件** - 用百度网盘 Cookie 调用 `share/verify` + `share/transfer` 接口转存
 2. **扫描文件** - 使用百度网盘 API 扫描实际文件，通过 `server_mtime` 时间过滤避免匹配旧文件
 3. **提取直链** - 通过 filemetas API 获取下载直链
 4. **移动文件** - 通过 OpenList API 移动 sharelink 文件夹；通过百度 filemanager API 清理空目录
 5. **过期清理** - 扫描 `/来自Bot`，删除超过 `file_retention_hours` 的文件
-6. **清理任务** - 删除 baidu-autosave 中的任务记录
 
 ## ⚠️ 注意事项
 
 - access_token 有效期约 8 小时，插件会自动刷新
 - 百度直链有效期约 8 小时
-- baidu-autosave 需要配置好百度网盘 cookies
+- BDUSS/STOKEN Cookie 可能过期，需定期更新
 - OpenList 需要挂载百度网盘
-- 文件会自动整理到 `autosave_dir` 目录下
+- 文件会自动整理到 `save_dir` 目录下
 - 过期文件清理需设置 `file_retention_hours > 0`
 
 ## 🐛 常见问题
@@ -174,56 +158,52 @@ A: 检查 OpenList 配置是否正确，确保百度网盘已挂载。
 **Q: 文件没有移动到指定目录？**
 A: 检查 OpenList 的百度网盘挂载路径是否正确。
 
+**Q: 转存失败提示 Cookie 过期？**
+A: 重新获取百度网盘 Cookie 更新到 `baidu_cookies` 配置项。
+
 **Q: 转存后提取了旧文件？**
 A: v7.1+ 已通过 `server_mtime` 时间过滤解决，只匹配本次转存期间创建的文件。
 
 ## 📄 更新日志
 
+### v8.1 (2026-06-28)
+- 🧹 移除 baidu-autosave 依赖及相关代码，仅保留内置转存模式
+- 🧹 移除 `transfer_mode`、`autosave_url`、`autosave_user`、`autosave_pass` 配置项
+- ✨ `autosave_dir` 更名为 `save_dir`
+- 📝 更新 README 文档
+
 ### v8.0 (2026-06-28)
-- ✨ 新增内置转存模式（`transfer_mode=builtin`）：直接用百度网盘 Cookie 转存，无需部署 baidu-autosave Docker 服务
+- ✨ 新增内置转存模式：直接用百度网盘 Cookie 转存，无需部署额外服务
 - ✨ 新增 `baidu_cookies` 配置项：支持粘贴完整 Cookie 字符串，插件自动提取 BDUSS 和 STOKEN
 - ✨ 内置转存支持递归列出分享目录、分页获取子目录文件
-- ✨ 内置模式下自动跳过 baidu-autosave 任务清理
-- 📝 更新 README 文档
 
 ### v7.3 (2026-06-28)
 - ✨ 新增多文件选择功能：转存后如有多个文件，列出编号列表供用户选择要提取直链的文件
 - ✨ 新增 `enable_file_selection` 配置项（默认开启，关闭后恢复全部提取直链的原行为）
 - ✨ 支持多选（空格/逗号分隔）、回复 `0`/`all`/`全部`/`所有` 选择全部
 - ✨ 120 秒超时自动取消，发送新链接可取消上次选择
-- 📝 更新 README 文档
 
 ### v7.2 (2026-06-07)
 - ✨ 新增 `allow_sessions` 安全机制：空列表默认阻止所有会话，防止凭据泄露
-- ✨ 新增 autosave 消息格式兼容（`使用密码访问分享链接`）
 - ✨ 新增插件 `logo.png`
 - 🐛 修复搜索条件过窄导致 `share/init?surl=` 链接被忽略
 - 🐛 修复多行字符串语法错误
 - 🐛 修复 `show_curl_command` 配置未生效
 - 🧹 移除未使用的 `bduss` 死代码
-- 📝 更新 README 文档
 
 ### v7.1 (2026-06-02)
 - ✨ 新增 `server_mtime` 时间过滤，防止匹配网盘旧文件
-- ✨ 新增智能目录扫描，自动发现 autosave 创建的日期目录和 sharelink
+- ✨ 新增智能目录扫描，自动发现日期目录和 sharelink
 - ✨ 新增 `/来自Bot` 过期文件自动清理（通过 `file_retention_hours` 配置）
 - ✨ 新增 `openlist_pan_path` 配置项
 - 🐛 修复 `save_dir` 未更新导致路径显示错误
-- 🐛 修复 `_scan_files_sync` 中重复扫描代码
-- 🐛 修复同步方法中 `aiohttp.ClientTimeout` 传参不兼容
-- 🐛 修复 autosave 转存目录未被正确返回
-- 🐛 修复 sharelink 文件夹误走 `_move_single_dir`
 - 🐛 修复目录删除路径错误，支持逐级清理空目录
-- 📝 更新 README 文档
 
 ### v7.0 (2026-06-01)
 - ✨ 新增自动移动 sharelink 文件夹功能
-- ✨ 新增自动清理 baidu-autosave 任务
 - ✨ 支持扫描根目录和 `/来自Bot` 目录的文件
-- 🐛 修复 baidu-autosave 缓存导致的文件匹配问题
 - 🐛 修复 OpenList API 调用方式
 - 🐛 修复 URL 编码问题
-- 📝 更新 README 文档
 
 ## 📜 许可证
 

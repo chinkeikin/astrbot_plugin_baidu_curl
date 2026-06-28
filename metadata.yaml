@@ -1,13 +1,12 @@
 name: astrbot_plugin_baidu_curl
 display_name: 百度网盘cURL下载助手
-desc: 发送百度网盘分享链接，自动转存、提取直链并生成cURL下载命令。支持内置转存（BDUSS Cookie）或baidu-autosave转存、OpenList集成、文件自动整理、多文件选择。
+desc: 发送百度网盘分享链接，自动转存、提取直链并生成cURL下载命令。内置转存（BDUSS Cookie）、OpenList集成、文件自动整理、多文件选择。
 help: |
   使用方法：
-  1. 选择转存模式（transfer_mode）：
-     - builtin：内置转存，只需填 baidu_cookies（BDUSS=xxx; STOKEN=yyy）
-       Cookie 获取方式：浏览器登录 pan.baidu.com → F12 → Application → Cookies
-       复制 BDUSS 和 STOKEN 的值，拼成 BDUSS=xxx; STOKEN=yyy
-     - autosave：使用 baidu-autosave 服务（需单独部署 Docker）
+  1. 配置百度网盘 Cookie（baidu_cookies）
+     获取方式：浏览器登录 pan.baidu.com → F12 → Network → 刷新页面
+     → 点击任意请求 → Headers → Cookie 复制全部内容
+     插件会自动提取 BDUSS 和 STOKEN
   2. 配置 OpenList 地址和账号（用于获取百度直链）
   3. 发送百度网盘分享链接，如：
      https://pan.baidu.com/s/1xxxxxxx 提取码:xxxx
@@ -20,10 +19,9 @@ help: |
   - 120秒内有效，发送新链接可取消选择
 
   前置依赖：
-  - 内置模式：百度网盘 Cookie（BDUSS + STOKEN）
-  - autosave 模式：baidu-autosave 服务
+  - 百度网盘 Cookie（BDUSS + STOKEN）
   - OpenList/AList：用于获取百度网盘 access_token
-version: v8.0.0
+version: v8.1.0
 author: jichie
 repo: https://github.com/jichie/astrbot_plugin_baidu_curl
 license: MIT

@@ -1,15 +1,15 @@
 {
-    "transfer_mode": {
-        "description": "转存模式",
-        "hint": "builtin = 内置转存（只需 BDUSS Cookie，无需 Docker）| autosave = 使用 baidu-autosave 服务",
-        "type": "string",
-        "default": "builtin"
-    },
     "baidu_cookies": {
-        "description": "百度网盘 Cookie（内置转存用）",
-        "hint": "内置转存模式必填。可直接粘贴浏览器中的完整 Cookie 字符串（插件会自动提取 BDUSS 和 STOKEN）。获取方式：浏览器登录 pan.baidu.com → F12 → Network → 刷新页面 → 点击任意请求 → Headers → Cookie 复制全部内容",
+        "description": "百度网盘 Cookie",
+        "hint": "必填。可直接粘贴浏览器中的完整 Cookie 字符串（插件会自动提取 BDUSS 和 STOKEN）。获取方式：浏览器登录 pan.baidu.com → F12 → Network → 刷新页面 → 点击任意请求 → Headers → Cookie 复制全部内容",
         "type": "string",
         "default": ""
+    },
+    "save_dir": {
+        "description": "转存目录",
+        "hint": "转存到网盘的目录",
+        "type": "string",
+        "default": "/来自Bot"
     },
     "enable_file_selection": {
         "description": "多文件时允许选择",
@@ -28,28 +28,6 @@
         "hint": "⚠️ 为防止凭证泄露，默认不启用任何会话。请在此添加允许的 session_id（如群号/用户ID）。留空则所有会话均被阻止！",
         "type": "list",
         "default": []
-    },
-    "autosave_url": {
-        "description": "baidu-autosave 地址（autosave 模式用）",
-        "hint": "如 http://192.168.1.207:5000，仅 transfer_mode=autosave 时需要",
-        "type": "string",
-        "default": ""
-    },
-    "autosave_user": {
-        "description": "baidu-autosave 用户名",
-        "type": "string",
-        "default": ""
-    },
-    "autosave_pass": {
-        "description": "baidu-autosave 密码",
-        "type": "string",
-        "default": ""
-    },
-    "autosave_dir": {
-        "description": "转存目录",
-        "hint": "转存到网盘的目录",
-        "type": "string",
-        "default": "/来自Bot"
     },
     "openlist_url": {
         "description": "OpenList 地址",
