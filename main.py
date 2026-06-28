@@ -998,6 +998,10 @@ class BaiduCurlPlugin(Star):
 
             # ---- 步骤4: 调用 transfer API 转存 ----
             save_dir = self.save_dir
+
+            # 先确保目标目录存在
+            self._ensure_dir_exists(s, save_dir)
+
             transfer_params = {
                 "shareid": str(share_id),
                 "from": str(uk),
@@ -1031,7 +1035,7 @@ class BaiduCurlPlugin(Star):
 
             errno = result.get("errno", -1)
 
-            # errno 0 = 成功, 12 = 部分已存在
+            # errno 0 = 成功, 4 = 文件已存在, 12 = 部分已存在, -33 = 全部已存在
             if errno == 0:
                 transferred = []
                 for item in result.get("info", []):
@@ -1043,9 +1047,9 @@ class BaiduCurlPlugin(Star):
                     "files": file_names,
                     "save_dir": save_dir,
                 }
-            elif errno == 12 or errno == -33:
+            elif errno in (4, 12, -33):
                 # 文件已存在
-                logger.info("[builtin] 文件已存在，跳过转存")
+                logger.info(f"[builtin] 文件已存在(errno={errno})，跳过转存")
                 return {
                     "success": True,
                     "files": all_file_names,
@@ -1114,6 +1118,76 @@ class BaiduCurlPlugin(Star):
                 logger.warning(f"[builtin] 列出目录异常: {e}")
                 break
         return all_files
+
+    def _get_bdstoken(self, session) -> str:
+        """从百度网盘首页获取当前用户的 bdstoken"""
+        try:
+            resp = session.get("https://pan.baidu.com/disk/home", timeout=15)
+            html = resp.text
+            m = re.search(r'bdstoken["\':\s]+([0-9a-f]{32})', html)
+            if m:
+                return m.group(1)
+            # 尝试另一种格式
+            m = re.search(r'"bdstoken":"?([0-9a-f]{32})"?', html)
+            if m:
+                return m.group(1)
+        except Exception as e:
+            logger.warning(f"[builtin] 获取 bdstoken 失败: {e}")
+        return ""
+
+    def _ensure_dir_exists(self, session, dir_path: str):
+        """确保网盘目录存在，逐级创建（类似 mkdir -p）"""
+        if not dir_path or dir_path == "/":
+            return
+
+        # 先获取当前用户的 bdstoken
+        bdstoken = self._get_bdstoken(session)
+
+        parts = dir_path.strip("/").split("/")
+        current = ""
+        for part in parts:
+            current = current + "/" + part
+            # 尝试创建目录（已存在则忽略）
+            try:
+                # 方式1: 用 create 接口（不需要 bdstoken）
+                params = {
+                    "a": "mkdir",
+                    "channel": "chunlei",
+                    "web": "1",
+                    "app_id": "250528",
+                    "bdstoken": bdstoken or "null",
+                    "clienttype": "0",
+                }
+                data = {"path": current, "isdir": "1"}
+                resp = session.post(
+                    "https://pan.baidu.com/api/filemanager",
+                    params=params,
+                    data=data,
+                    timeout=10,
+                )
+                result = resp.json()
+                errno = result.get("errno")
+                # errno 0=成功, -8=目录已存在, 都算正常
+                if errno in (0, -8):
+                    logger.info(f"[builtin] 目录就绪: {current}")
+                elif errno == 2 and bdstoken:
+                    # bdstoken 无效，尝试用 create 接口
+                    logger.info(f"[builtin] filemanager 失败(errno=2)，尝试 create 接口: {current}")
+                    resp2 = session.post(
+                        "https://pan.baidu.com/api/create",
+                        params={"a": "mkdir", "channel": "chunlei", "web": "1", "app_id": "250528", "clienttype": "0"},
+                        data={"path": current, "isdir": "1"},
+                        timeout=10,
+                    )
+                    result2 = resp2.json()
+                    if result2.get("errno") in (0, -8):
+                        logger.info(f"[builtin] 目录就绪(create): {current}")
+                    else:
+                        logger.warning(f"[builtin] 创建目录失败: {current}, errno={result2.get('errno')}")
+                else:
+                    logger.warning(f"[builtin] 创建目录失败: {current}, errno={errno}")
+            except Exception as e:
+                logger.warning(f"[builtin] 创建目录异常: {current}, {e}")
 
     async def _get_dlinks(self, save_dir: str, file_names: list = None) -> list:
         loop = asyncio.get_running_loop()
