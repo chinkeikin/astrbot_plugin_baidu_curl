@@ -516,6 +516,326 @@ class BaiduCurlPlugin(Star):
         return dlinks
 
 
+    def _scan_files_sync(
+        self,
+        at,
+        scan_files,
+        save_dir_param="/来自Bot",
+        actual_dir=None,
+        extra_dirs=None,
+        has_actual_dir=False,
+        min_mtime=0,
+    ):
+        """同步扫描百度网盘文件（在线程池中调用）"""
+        files = []
+        save_dir = save_dir_param
+
+        try:
+            s = cffi_requests.Session(impersonate="chrome120")
+
+            # 要扫描的目录列表（优先扫实际目录）
+            dirs_to_scan = []
+            if actual_dir:
+                dirs_to_scan.append(actual_dir)
+            if extra_dirs:
+                dirs_to_scan.extend(extra_dirs)
+
+            # 如果没有明确的转存目录，才扫描 save_dir_param
+            if not has_actual_dir and save_dir_param not in dirs_to_scan:
+                dirs_to_scan.append(save_dir_param)
+
+            # 扫描指定目录
+            for scan_dir in dirs_to_scan:
+                if files:
+                    break
+                logger.info(f"[scan] 扫描目录: {scan_dir}")
+                bot_encoded = urllib.parse.quote(scan_dir, safe="/")
+                bot_resp = s.get(
+                    f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={bot_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                    timeout=15,
+                )
+                bot_data = bot_resp.json()
+                logger.info(
+                    f"[scan] {scan_dir} 文件数: {len(bot_data.get('list', []))}"
+                )
+
+                # 用文件名匹配（有明确目录时，只取该目录的文件）
+                def _scan_dir(dir_path, depth=0):
+                    nonlocal save_dir
+                    if depth > 3:
+                        return
+                    try:
+                        encoded = urllib.parse.quote(dir_path, safe="/")
+                        resp = s.get(
+                            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                            timeout=15,
+                        )
+                        data = resp.json()
+                        for f in data.get("list", []):
+                            fname = f.get("server_filename", "")
+                            if f.get("isdir"):
+                                _scan_dir(f.get("path", ""), depth + 1)
+                                continue
+                            if min_mtime and f.get("server_mtime", 0) < min_mtime:
+                                continue
+                            if (
+                                not has_actual_dir
+                                and scan_files is not None
+                                and fname not in scan_files
+                            ):
+                                continue
+                            files.append(f.get("path", ""))
+                            save_dir = dir_path
+                            logger.info(f"[scan] 匹配到文件: {fname}")
+                    except Exception as e:
+                        logger.warning(f"[scan] 子目录扫描错误: {e}")
+
+                _scan_dir(scan_dir)
+
+                # 如果是 actual_dir 且找到了文件，不需要继续扫描其他目录
+                if files and scan_dir == actual_dir:
+                    break
+
+            # 搜索根目录的 sharelink 文件夹（不管有没有明确目录都要搜）
+            if not files or has_actual_dir:
+                logger.info(f"[scan] 搜索根目录 sharelink")
+                root_resp = s.get(
+                    f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir=/&dlink=1&web=1&app_id=250528&access_token={at}",
+                    timeout=15,
+                )
+                root_data = root_resp.json()
+                for item in root_data.get("list", []):
+                    if item.get("isdir") and "sharelink" in item.get("path", ""):
+                        sub_encoded = urllib.parse.quote(item["path"], safe="/")
+                        sub_resp = s.get(
+                            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                            timeout=15,
+                        )
+                        sub_data = sub_resp.json()
+                        for f in sub_data.get("list", []):
+                            fname = f.get("server_filename", "")
+                            if f.get("isdir"):
+                                continue
+                            if min_mtime and f.get("server_mtime", 0) < min_mtime:
+                                continue
+                            if (
+                                not has_actual_dir
+                                and scan_files is not None
+                                and fname not in scan_files
+                            ):
+                                continue
+                            files.append(f.get("path", ""))
+                            save_dir = item["path"]
+                            logger.info(
+                                f"[scan] 匹配到文件: {fname} (在 {item['path']})"
+                            )
+
+            # 搜索根目录的其他文件夹（可能创建日期目录如 /2024 或 /分享等）
+            if has_actual_dir:
+                logger.info(f"[scan] 搜索根目录其他文件夹")
+                for item in root_data.get("list", []):
+                    path = item.get("path", "")
+                    if (
+                        item.get("isdir")
+                        and "/sharelink" not in path
+                        and path not in ("/来自Bot", "/apps")
+                    ):
+                        try:
+                            encoded = urllib.parse.quote(path, safe="/")
+                            sub_resp = s.get(
+                                f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                                timeout=15,
+                            )
+                            sub_data = sub_resp.json()
+                            for f in sub_data.get("list", []):
+                                fname = f.get("server_filename", "")
+                                if f.get("isdir"):
+                                    # 递归进入子目录（最多 3 层）
+                                    sub2_encoded = urllib.parse.quote(
+                                        f["path"], safe="/"
+                                    )
+                                    sub2_resp = s.get(
+                                        f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub2_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                                        timeout=15,
+                                    )
+                                    sub2_data = sub2_resp.json()
+                                    for f2 in sub2_data.get("list", []):
+                                        if f2.get("isdir"):
+                                            sub3_encoded = urllib.parse.quote(
+                                                f2["path"], safe="/"
+                                            )
+                                            sub3_resp = s.get(
+                                                f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub3_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                                                timeout=15,
+                                            )
+                                            sub3_data = sub3_resp.json()
+                                            for f3 in sub3_data.get("list", []):
+                                                if not f3.get("isdir"):
+                                                    if (
+                                                        min_mtime
+                                                        and f3.get("server_mtime", 0)
+                                                        >= min_mtime
+                                                    ):
+                                                        files.append(f3.get("path", ""))
+                                                        save_dir = f2["path"]
+                                                        logger.info(
+                                                            f"[scan] 匹配到文件(日期目录): {f3.get('server_filename', '')}"
+                                                        )
+                                        else:
+                                            if (
+                                                min_mtime
+                                                and f2.get("server_mtime", 0)
+                                                >= min_mtime
+                                            ):
+                                                files.append(f2.get("path", ""))
+                                                save_dir = f["path"]
+                                                logger.info(
+                                                    f"[scan] 匹配到文件(日期目录): {f2.get('server_filename', '')}"
+                                                )
+                                else:
+                                    if (
+                                        min_mtime
+                                        and f.get("server_mtime", 0) >= min_mtime
+                                    ):
+                                        files.append(f.get("path", ""))
+                                        save_dir = path
+                                        logger.info(
+                                            f"[scan] 匹配到文件(日期目录): {fname}"
+                                        )
+                        except Exception as e:
+                            logger.warning(f"[scan] 日期目录扫描错误: {e}")
+
+            # 搜索 /来自Bot 的子目录
+            if not files:
+                logger.info(f"[scan] 根目录没找到，搜索子目录")
+                for item in bot_data.get("list", []):
+                    if item.get("isdir") and "sharelink" in item.get("path", ""):
+                        sub_encoded = urllib.parse.quote(item["path"], safe="/")
+                        sub_resp = s.get(
+                            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                            timeout=15,
+                        )
+                        sub_data = sub_resp.json()
+                        for f in sub_data.get("list", []):
+                            fname = f.get("server_filename", "")
+                            if scan_files is None or fname in scan_files:
+                                if min_mtime and f.get("server_mtime", 0) < min_mtime:
+                                    continue
+                                files.append(f.get("path", ""))
+                                save_dir = item["path"]
+                                logger.info(
+                                    f"[scan] 匹配到文件: {fname} (在 {item['path']})"
+                                )
+        except Exception as e:
+            logger.error(f"[scan] 扫描失败: {e}")
+
+        logger.info(f"[scan] 最终文件: {files}, 目录: {save_dir}")
+        return files, save_dir
+
+    async def _cleanup_date_dirs(self, dir_path: str):
+        """用百度 API 逐级删除空日期目录（OpenList 可能无法访问这些路径）"""
+        if not self._access_token:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, self._cleanup_date_dirs_sync, dir_path, self._access_token
+            )
+        except Exception as e:
+            logger.warning(f"[cleanup] 清理目录失败: {e}")
+
+    def _cleanup_date_dirs_sync(self, dir_path: str, at: str):
+        """同步清理日期目录（在线程池中执行）"""
+        try:
+            s = cffi_requests.Session(impersonate="chrome120")
+            parts = dir_path.strip("/").split("/")
+            # 从最深目录向上逐级尝试删除
+            for i in range(len(parts), 0, -1):
+                path = "/" + "/".join(parts[:i])
+                filelist = json.dumps([path])
+                url = f"https://pan.baidu.com/rest/2.0/xpan/file?method=filemanager&opera=delete&access_token={at}"
+                resp = s.post(
+                    url,
+                    data={"async": 0, "filelist": filelist, "ondup": "fail"},
+                    timeout=15,
+                )
+                data = resp.json()
+                logger.info(
+                    f"[cleanup] 删除 {path}: errno={data.get('errno')}, info={data.get('info')}"
+                )
+        except Exception as e:
+            logger.warning(f"[cleanup] 删除目录异常: {e}")
+
+    async def _cleanup_old_files(self):
+        """清理 /来自Bot 中超过保留时长的文件"""
+        if not self.file_retention_hours or not self._access_token:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            deleted = await loop.run_in_executor(
+                None, self._cleanup_old_files_sync, self._access_token
+            )
+            if deleted:
+                logger.info(f"[cleanup] 清理了 {deleted} 个过期文件")
+        except Exception as e:
+            logger.warning(f"[cleanup] 清理旧文件失败: {e}")
+
+    def _cleanup_old_files_sync(self, at: str) -> int:
+        """同步清理过期文件（在线程池中执行）"""
+        cutoff = int(time.time()) - self.file_retention_hours * 3600
+        all_files = []
+
+        try:
+            s = cffi_requests.Session(impersonate="chrome120")
+
+            def _list_recursive(dir_path, depth=0):
+                if depth > 3:
+                    return
+                try:
+                    encoded = urllib.parse.quote(dir_path, safe="/")
+                    resp = s.get(
+                        f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+                        timeout=15,
+                    )
+                    data = resp.json()
+                    for f in data.get("list", []):
+                        if f.get("isdir"):
+                            _list_recursive(f.get("path", ""), depth + 1)
+                        else:
+                            mtime = f.get("server_mtime", 0)
+                            if mtime < cutoff:
+                                all_files.append(f.get("path", ""))
+                except Exception as e:
+                    logger.warning(f"[cleanup] 列出目录失败: {e}")
+
+            _list_recursive(self.save_dir)
+
+            if not all_files:
+                return 0
+
+            # 批量删除过期文件
+            logger.info(f"[cleanup] 发现 {len(all_files)} 个过期文件，开始删除")
+            # 每批最多删 100 个
+            for i in range(0, len(all_files), 100):
+                batch = all_files[i : i + 100]
+                filelist = json.dumps(batch)
+                url = f"https://pan.baidu.com/rest/2.0/xpan/file?method=filemanager&opera=delete&access_token={at}"
+                resp = s.post(
+                    url,
+                    data={"async": 0, "filelist": filelist, "ondup": "fail"},
+                    timeout=30,
+                )
+                data = resp.json()
+                logger.info(
+                    f"[cleanup] 批次 {i // 100 + 1}: errno={data.get('errno')}, info={data.get('info')}"
+                )
+
+            return len(all_files)
+        except Exception as e:
+            logger.warning(f"[cleanup] 清理旧文件异常: {e}")
+            return 0
+
+
     # ==================== 内置转存（BDUSS Cookie） ====================
 
     async def _builtin_transfer(self, surl: str, pwd: str) -> dict:
