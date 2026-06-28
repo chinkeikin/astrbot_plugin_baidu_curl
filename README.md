@@ -12,7 +12,7 @@
 
 ## ✨ 功能
 
-- 📦 **自动转存** - 调用 baidu-autosave 转存分享文件到自己网盘
+- 📦 **自动转存** - 支持内置转存（BDUSS Cookie）或 baidu-autosave 两种模式
 - 🔗 **提取直链** - 通过 filemetas API 获取百度直链
 - 🔧 **生成命令** - 生成完整的 cURL 下载命令
 - 🔑 **自动刷新** - 从 OpenList 获取并刷新 OAuth token
@@ -25,9 +25,27 @@
 
 ## 📋 前置依赖
 
+### 转存模式（二选一）
+
+| 模式 | 说明 | 配置 |
+|------|------|------|
+| **内置转存**（默认） | 直接用百度网盘 Cookie 转存，无需额外服务 | `baidu_cookies`（粘贴完整 Cookie 即可） |
+| **baidu-autosave** | 调用 baidu-autosave 服务转存 | `autosave_url` + `autosave_user` + `autosave_pass` |
+
+> 通过 `transfer_mode` 配置项切换：`builtin` 或 `autosave`
+
+### 获取 Cookie（内置转存模式）
+
+1. 浏览器登录 [pan.baidu.com](https://pan.baidu.com)
+2. 按 F12 打开开发者工具
+3. Network → 刷新页面 → 点击任意请求 → Headers → Cookie
+4. 复制完整 Cookie 字符串，粘贴到 `baidu_cookies` 配置项
+5. 插件会自动提取 BDUSS 和 STOKEN
+
+### 其他依赖
+
 | 服务 | 用途 | 部署方式 |
 |------|------|---------|
-| **baidu-autosave** | 百度网盘自动转存 | Docker 部署，[GitHub](https://github.com/kokojacket/baidu-autosave) |
 | **OpenList/AList** | 获取 refresh_token 凭证 | [GitHub](https://github.com/AlistGo/alist) |
 
 ## ⚙️ 配置项
@@ -36,7 +54,9 @@
 
 | 配置项 | 说明 | 示例 |
 |--------|------|------|
-| `autosave_url` | baidu-autosave 地址 | `http://192.168.1.207:5000` |
+| `transfer_mode` | 转存模式 | `builtin`（默认）或 `autosave` |
+| `baidu_cookies` | 百度网盘 Cookie（内置模式用） | 粘贴完整 Cookie 字符串 |
+| `autosave_url` | baidu-autosave 地址（autosave 模式用） | `http://192.168.1.207:5000` |
 | `autosave_user` | baidu-autosave 用户名 | `admin` |
 | `autosave_pass` | baidu-autosave 密码 | - |
 | `autosave_dir` | 转存目标目录 | `/来自Bot` |
@@ -158,6 +178,13 @@ A: 检查 OpenList 的百度网盘挂载路径是否正确。
 A: v7.1+ 已通过 `server_mtime` 时间过滤解决，只匹配本次转存期间创建的文件。
 
 ## 📄 更新日志
+
+### v8.0 (2026-06-28)
+- ✨ 新增内置转存模式（`transfer_mode=builtin`）：直接用百度网盘 Cookie 转存，无需部署 baidu-autosave Docker 服务
+- ✨ 新增 `baidu_cookies` 配置项：支持粘贴完整 Cookie 字符串，插件自动提取 BDUSS 和 STOKEN
+- ✨ 内置转存支持递归列出分享目录、分页获取子目录文件
+- ✨ 内置模式下自动跳过 baidu-autosave 任务清理
+- 📝 更新 README 文档
 
 ### v7.3 (2026-06-28)
 - ✨ 新增多文件选择功能：转存后如有多个文件，列出编号列表供用户选择要提取直链的文件

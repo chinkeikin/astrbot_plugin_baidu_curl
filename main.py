@@ -1,6 +1,6 @@
 """
-百度网盘 cURL 下载助手 v7.3
-baidu-autosave 转存 + refresh_token 刷新 + filemetas API 获取直链
+百度网盘 cURL 下载助手 v8.0
+内置转存（BDUSS Cookie）+ baidu-autosave（可选）+ refresh_token 刷新 + filemetas API 获取直链
 支持多文件时用户选择要提取直链的文件
 """
 
@@ -10,6 +10,7 @@ import asyncio
 import time
 import json
 import re
+import random
 from typing import Optional
 
 import aiohttp
@@ -68,6 +69,10 @@ class BaiduCurlPlugin(Star):
         self.file_retention_hours: int = int(cfg.get("file_retention_hours", 0) or 0)
         # 多文件选择
         self.enable_file_selection: bool = cfg.get("enable_file_selection", True)
+        # 转存模式: "builtin"（内置，用 BDUSS Cookie）或 "autosave"（baidu-autosave 服务）
+        self.transfer_mode: str = cfg.get("transfer_mode", "builtin")
+        # 百度网盘 Cookie（内置转存模式用）
+        self.baidu_cookies: str = cfg.get("baidu_cookies", "")
         # 缓存
         self._access_token: str = ""
         self._token_expire: float = 0  # token 过期时间戳
@@ -153,12 +158,22 @@ class BaiduCurlPlugin(Star):
             yield msg
 
     async def _run(self, ev: AstrMessageEvent, surl: str, pwd: str):
-        # 1. baidu-autosave 转存
+        # 1. 转存（内置或 baidu-autosave）
         yield ev.plain_result("📦 转存中...")
         cutoff_time = (
             int(time.time()) - 60
         )  # 记录转存前时间（60s buffer），后续只匹配此后的文件
-        tr = await self._autosave(surl, pwd)
+        if self.transfer_mode == "builtin":
+            if not self.baidu_cookies:
+                yield ev.plain_result(
+                    "⚠️ 内置转存模式未配置 baidu_cookies\n"
+                    "请在设置中填入百度网盘 Cookie（BDUSS=xxx; STOKEN=xxx）\n"
+                    "或切换 transfer_mode 为 autosave 使用 baidu-autosave 服务"
+                )
+                return
+            tr = await self._builtin_transfer(surl, pwd)
+        else:
+            tr = await self._autosave(surl, pwd)
         if not tr.get("success"):
             yield ev.plain_result("❌ 转存失败: " + tr.get("error", "未知"))
             return
@@ -1062,6 +1077,285 @@ class BaiduCurlPlugin(Star):
             logger.error(f"[autosave] 转存失败: {e}")
             return {"success": False, "error": str(e)}
 
+    # ==================== 内置转存（BDUSS Cookie） ====================
+
+    async def _builtin_transfer(self, surl: str, pwd: str) -> dict:
+        """内置转存：用 BDUSS Cookie 直接调用百度网盘 API 转存分享文件"""
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, self._builtin_transfer_sync, surl, pwd
+            )
+        except Exception as e:
+            logger.error(f"[builtin] 转存失败: {e}")
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _parse_cookie_string(cookie_str: str) -> dict:
+        """解析 Cookie 字符串为字典，如 'BDUSS=xxx; STOKEN=yyy' -> {BDUSS: xxx, STOKEN: yyy}"""
+        cookies = {}
+        if not cookie_str:
+            return cookies
+        for item in cookie_str.split(";"):
+            item = item.strip()
+            if "=" in item:
+                key, value = item.split("=", 1)
+                cookies[key.strip()] = value.strip()
+        return cookies
+
+    def _builtin_transfer_sync(self, surl: str, pwd: str) -> dict:
+        """同步内置转存（在线程池中执行）
+
+        流程:
+        1. 用 Cookie 访问分享链接，验证密码（如有）
+        2. 解析分享页面获取文件列表
+        3. 递归列出文件夹内容，收集所有文件的 fs_id
+        4. 调用 share/transfer 接口转存到指定目录
+        """
+        try:
+            s = cffi_requests.Session(impersonate="chrome120")
+
+            # 解析 Cookie
+            cookies = self._parse_cookie_string(self.baidu_cookies)
+            if not cookies.get("BDUSS"):
+                return {"success": False, "error": "Cookie 中缺少 BDUSS，请检查 Cookie 是否正确"}
+            if not cookies.get("STOKEN"):
+                logger.warning("[builtin] Cookie 中缺少 STOKEN，部分分享可能无法转存")
+            # 设置所有 Cookie（完整 Cookie 兼容性更好）
+            for k, v in cookies.items():
+                if v:  # 跳过空值如 TWIE=''
+                    s.cookies.set(k, v)
+
+            share_url = f"https://pan.baidu.com/s/1{surl}"
+            init_url = f"https://pan.baidu.com/share/init?surl={surl}"
+
+            # ---- 步骤1: 验证密码（如有）----
+            if pwd:
+                logger.info(f"[builtin] 验证密码: surl={surl}")
+                params = {
+                    "surl": surl,
+                    "t": str(int(time.time() * 1000)),
+                    "channel": "chunlei",
+                    "web": "1",
+                    "bdstoken": "null",
+                    "clienttype": "0",
+                    "app_id": "250528",
+                }
+                data = {"pwd": pwd, "vcode": "", "vcode_str": ""}
+                headers = {"Referer": init_url}
+                resp = s.post(
+                    "https://pan.baidu.com/share/verify",
+                    params=params,
+                    data=data,
+                    headers=headers,
+                    timeout=15,
+                )
+                result = resp.json()
+                logger.info(f"[builtin] 密码验证结果: errno={result.get('errno')}")
+                if result.get("errno") != 0:
+                    return {
+                        "success": False,
+                        "error": f"密码验证失败 (errno={result.get('errno')})",
+                    }
+
+            # ---- 步骤2: 访问分享页面，解析文件列表 ----
+            logger.info(f"[builtin] 访问分享页面: {share_url}")
+            resp = s.get(share_url, timeout=15)
+            html = resp.text
+
+            # 解析 yunData.setData({...}) 或 locals.mset({...})
+            match = re.search(r"(?:yunData\.setData|locals\.mset)\(", html)
+            if not match:
+                # 尝试从页面中提取 JSON 数据（兼容新版本页面）
+                return {"success": False, "error": "无法解析分享页面，可能 Cookie 已过期或分享已失效"}
+
+            # 用花括号匹配找到完整 JSON
+            start = match.end()
+            brace_count = 0
+            end = start
+            for i, c in enumerate(html[start:], start):
+                if c == "{":
+                    brace_count += 1
+                elif c == "}":
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end = i + 1
+                        break
+
+            try:
+                shared_data = json.loads(html[start:end])
+            except json.JSONDecodeError:
+                return {"success": False, "error": "解析分享数据失败"}
+
+            uk = int(shared_data.get("share_uk") or shared_data.get("uk", 0))
+            share_id = shared_data.get("shareid")
+            bdstoken = shared_data.get("bdstoken", "") or ""
+
+            if not uk or not share_id:
+                return {"success": False, "error": "无法获取分享信息 (uk/shareid 为空)"}
+
+            # 提取文件列表
+            file_list_raw = shared_data.get("file_list", {})
+            if isinstance(file_list_raw, list):
+                root_files = file_list_raw
+            elif isinstance(file_list_raw, dict):
+                root_files = file_list_raw.get("list", [])
+            else:
+                root_files = []
+
+            if not root_files:
+                return {"success": False, "error": "分享中没有文件"}
+
+            logger.info(f"[builtin] 分享根目录有 {len(root_files)} 项, uk={uk}, share_id={share_id}")
+
+            # ---- 步骤3: 递归收集所有文件的 fs_id ----
+            all_fs_ids = []
+            all_file_names = []
+
+            def _collect_files(file_items):
+                for f in file_items:
+                    if f.get("isdir") == 1:
+                        # 递归列出子目录
+                        dir_path = f.get("path", "")
+                        logger.info(f"[builtin] 列出共享目录: {dir_path}")
+                        sub_files = self._list_shared_dir_builtin(
+                            s, dir_path, uk, share_id
+                        )
+                        _collect_files(sub_files)
+                    else:
+                        fs_id = f.get("fs_id")
+                        if fs_id:
+                            all_fs_ids.append(fs_id)
+                            name = f.get("server_filename") or f.get("path", "").split("/")[-1]
+                            all_file_names.append(name)
+                            logger.info(f"[builtin] 记录文件: {name}")
+
+            _collect_files(root_files)
+
+            if not all_fs_ids:
+                return {"success": False, "error": "没有可转存的文件（可能全是空文件夹）"}
+
+            logger.info(f"[builtin] 共 {len(all_fs_ids)} 个文件待转存")
+
+            # ---- 步骤4: 调用 transfer API 转存 ----
+            save_dir = self.autosave_dir
+            transfer_params = {
+                "shareid": str(share_id),
+                "from": str(uk),
+                "bdstoken": bdstoken if bdstoken else "null",
+                "channel": "chunlei",
+                "clienttype": "0",
+                "web": "1",
+                "app_id": "250528",
+            }
+            transfer_data = {
+                "fsidlist": json.dumps(all_fs_ids),
+                "path": save_dir,
+            }
+            transfer_headers = {
+                "X-Requested-With": "XMLHttpRequest",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Origin": "https://pan.baidu.com",
+                "Referer": share_url,
+            }
+
+            logger.info(f"[builtin] 转存到 {save_dir}")
+            resp = s.post(
+                "https://pan.baidu.com/share/transfer",
+                params=transfer_params,
+                data=transfer_data,
+                headers=transfer_headers,
+                timeout=30,
+            )
+            result = resp.json()
+            logger.info(f"[builtin] 转存结果: errno={result.get('errno')}")
+
+            errno = result.get("errno", -1)
+
+            # errno 0 = 成功, 12 = 部分已存在
+            if errno == 0:
+                transferred = []
+                for item in result.get("info", []):
+                    if item.get("errno") == 0:
+                        transferred.append(item.get("path", "").split("/")[-1])
+                file_names = transferred if transferred else all_file_names
+                return {
+                    "success": True,
+                    "files": file_names,
+                    "save_dir": save_dir,
+                }
+            elif errno == 12 or errno == -33:
+                # 文件已存在
+                logger.info("[builtin] 文件已存在，跳过转存")
+                return {
+                    "success": True,
+                    "files": all_file_names,
+                    "save_dir": save_dir,
+                    "existed": True,
+                }
+            elif errno == -20:
+                return {"success": False, "error": "转存失败: 可能 Cookie 已过期，请更新 BDUSS/STOKEN"}
+            elif errno == -130:
+                return {"success": False, "error": "转存失败: 分享已失效或被取消"}
+            else:
+                # 检查 info 中是否有部分成功
+                partial = [item for item in result.get("info", []) if item.get("errno") == 0]
+                if partial:
+                    file_names = [item.get("path", "").split("/")[-1] for item in partial]
+                    return {
+                        "success": True,
+                        "files": file_names,
+                        "save_dir": save_dir,
+                    }
+                return {"success": False, "error": f"转存失败 (errno={errno})"}
+
+        except Exception as e:
+            logger.error(f"[builtin] 转存异常: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _list_shared_dir_builtin(self, session, dir_path: str, uk: int, share_id: int) -> list:
+        """列出分享目录中的文件（分页获取，最多 3 层深度）"""
+        all_files = []
+        page = 1
+        while True:
+            params = {
+                "channel": "chunlei",
+                "clienttype": "0",
+                "web": "1",
+                "page": str(page),
+                "num": "100",
+                "dir": dir_path,
+                "t": str(random.random()),
+                "uk": str(uk),
+                "shareid": str(share_id),
+                "desc": "1",
+                "order": "other",
+                "bdstoken": "null",
+                "showempty": "0",
+                "app_id": "250528",
+            }
+            try:
+                resp = session.get(
+                    "https://pan.baidu.com/share/list",
+                    params=params,
+                    timeout=15,
+                )
+                data = resp.json()
+                if data.get("errno") != 0:
+                    logger.warning(f"[builtin] 列出目录失败: {dir_path}, errno={data.get('errno')}")
+                    break
+                file_list = data.get("list", [])
+                all_files.extend(file_list)
+                if len(file_list) < 100:
+                    break
+                page += 1
+                if page > 10:  # 安全限制，最多 1000 个文件
+                    break
+            except Exception as e:
+                logger.warning(f"[builtin] 列出目录异常: {e}")
+                break
+        return all_files
+
     async def _get_dlinks(self, save_dir: str, file_names: list = None) -> list:
         loop = asyncio.get_running_loop()
 
@@ -1393,6 +1687,8 @@ class BaiduCurlPlugin(Star):
     async def _cleanup_autosave_task(self, surl: str):
         """删除 baidu-autosave 里的任务"""
         if not self.autosave_url:
+            return
+        if self.transfer_mode != "autosave":
             return
 
         try:

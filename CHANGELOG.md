@@ -1,5 +1,18 @@
 # Changelog
 
+## v8.0.0 (2026-06-28)
+
+### 新增
+- 内置转存模式（`transfer_mode=builtin`）：直接用百度网盘 Cookie 转存，无需部署 baidu-autosave Docker 服务
+- `baidu_cookies` 配置项：支持粘贴完整 Cookie 字符串，插件自动提取 BDUSS 和 STOKEN
+- 内置转存支持递归列出分享目录、分页获取子目录文件
+- 转存入口按 `transfer_mode` 分流：`builtin`（内置）或 `autosave`（baidu-autosave 服务）
+
+### 修复
+- 内置模式下自动跳过 baidu-autosave 任务清理，避免连接失败警告
+
+---
+
 ## v7.3.0 (2026-06-28)
 
 ### 新增
