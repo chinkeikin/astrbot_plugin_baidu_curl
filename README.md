@@ -86,9 +86,9 @@ https://pan.baidu.com/s/1xxxxxxx 提取码:xxxx
 
 📂 共找到 3 个文件，请选择要提取直链的文件：
 
-1. file1.flac
-2. file2.mp3
-3. file3.jpg
+1. file1.flac（30.0MB）
+2. file2.mp3（8.2MB）
+3. file3.jpg（512.0KB）
 
 💡 回复数字选择（多个用空格/逗号分隔，如 1 3）
 💡 回复 0 或 all 选择全部
@@ -165,6 +165,20 @@ A: 重新获取百度网盘 Cookie 更新到 `baidu_cookies` 配置项。
 A: v7.1+ 已通过 `server_mtime` 时间过滤解决，只匹配本次转存期间创建的文件。
 
 ## 📄 更新日志
+
+### v8.3 (2026-06-30)
+- 🛠️ 重构 `_scan_files_sync`：提取通用递归扫描函数，嵌套从 7 层降至 3 层
+- 🔧 提取 `_openlist_login_sync` 公共方法，消除重复登录代码
+- 🗑️ 删除 `_move_files_sync` 死代码和 `has_actual_dir` 死分支（净删 ~130 行）
+- ✨ 文件选择列表新增显示文件大小（自动格式化 B/KB/MB/GB/TB）
+- ⚡ Token 缓存 1 小时，减少重复登录 OpenList
+- ⚡ 时间过滤窗口从 60s 扩大到 300s
+- 🐛 修复 `openlist_pan_path` 配置项未使用的问题（3 处硬编码 `/百度` 替换）
+- 🐛 修复转存时重复列举文件的问题（透传 `share_info` 避免二次请求）
+- 🧹 移除未使用的 `_refresh_token` / `_client_id` / `_client_secret` 字段
+- 🔒 添加 `asyncio.Lock` 保护待选择状态的并发操作
+- 🔒 所有 `except Exception` 增加堆栈信息
+- 📦 添加 `curl_cffi` 依赖声明到 `requirements.txt`
 
 ### v8.2 (2026-06-29)
 - ✨ 多文件选择改为先列出文件再转存选中的，未选中的不转存，节省网盘空间
