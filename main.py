@@ -60,6 +60,7 @@ class BaiduCurlPlugin(Star):
         self.openlist_url: str = cfg.get("openlist_url", "").rstrip("/")
         self.openlist_user: str = cfg.get("openlist_user", "")
         self.openlist_pass: str = cfg.get("openlist_pass", "")
+        self.openlist_pan_path: str = cfg.get("openlist_pan_path", "/百度")
         # 显示设置
         self.show_curl_command: bool = cfg.get("show_curl_command", True)
         # 文件清理
@@ -71,14 +72,29 @@ class BaiduCurlPlugin(Star):
         # 缓存
         self._access_token: str = ""
         self._token_expire: float = 0  # token 过期时间戳
-        self._refresh_token: str = ""
-        self._client_id: str = ""
-        self._client_secret: str = ""
-        # 待选择的文件状态: session_id -> {files, save_dir, surl, has_actual_dir, timestamp}
+        # 待选择的文件状态: session_id -> {share_files, surl, pwd, uk, share_id, bdstoken, timestamp}
         self._pending_selections: dict = {}
+        self._selection_lock = asyncio.Lock()
 
     async def terminate(self):
         pass
+
+
+    async def _get_pending_state(self, sid: str):
+        """原子读取 sid 的待选择状态（不删除）"""
+        async with self._selection_lock:
+            return self._pending_selections.get(sid)
+
+    async def _remove_pending_state(self, sid: str):
+        """原子删除 sid 的待选择状态"""
+        async with self._selection_lock:
+            self._pending_selections.pop(sid, None)
+
+    async def _set_pending_state(self, sid: str, state: dict):
+        """原子设置 sid 的待选择状态"""
+        async with self._selection_lock:
+            self._pending_selections[sid] = state
+
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
@@ -86,11 +102,11 @@ class BaiduCurlPlugin(Star):
         sid = event.session_id
 
         # ---- 检查是否有待处理的文件选择 ----
-        if sid in self._pending_selections:
-            state = self._pending_selections[sid]
+        state = await self._get_pending_state(sid)
+        if state:
             # 超时检查
             if time.time() - state["timestamp"] > self._SELECTION_TIMEOUT:
-                del self._pending_selections[sid]
+                await self._remove_pending_state(sid)
                 yield event.plain_result("⏰ 文件选择已超时，请重新发送链接")
                 return
 
@@ -108,7 +124,7 @@ class BaiduCurlPlugin(Star):
 
             # 如果是新的分享链接，取消上次选择，继续处理新链接
             if self._RE.search(text):
-                del self._pending_selections[sid]
+                await self._remove_pending_state(sid)
                 yield event.plain_result("ℹ️ 已取消上次的文件选择，开始处理新链接...")
                 # 继续往下处理新链接（不 return）
             else:
@@ -169,14 +185,22 @@ class BaiduCurlPlugin(Star):
         if self.enable_file_selection and len(share_files) > 1:
             lines = []
             for i, f in enumerate(share_files, 1):
-                lines.append(f"{i}. {f['name']}")
+                size_str = self._format_size(f.get("size", 0))
+                if size_str:
+                    lines.append(f"{i}. {f['name']}（{size_str}）")
+                else:
+                    lines.append(f"{i}. {f['name']}")
 
-            self._pending_selections[ev.session_id] = {
+            await self._set_pending_state(ev.session_id, {
                 "share_files": share_files,
                 "surl": surl,
                 "pwd": pwd,
+                "uk": lr.get("uk"),
+                "share_id": lr.get("share_id"),
+                "bdstoken": lr.get("bdstoken", ""),
+                "share_url": lr.get("share_url", ""),
                 "timestamp": time.time(),
-            }
+            })
 
             yield ev.plain_result(
                 f"📂 共 {len(share_files)} 个文件，请选择要转存并提取直链的文件：\n\n"
@@ -189,7 +213,13 @@ class BaiduCurlPlugin(Star):
 
         # 单文件或未启用选择：直接转存全部
         selected_indices = list(range(len(share_files)))
-        async for msg in self._do_transfer_and_dlinks(ev, surl, pwd, share_files, selected_indices):
+        share_info = {
+            "uk": lr.get("uk"),
+            "share_id": lr.get("share_id"),
+            "bdstoken": lr.get("bdstoken", ""),
+            "share_url": lr.get("share_url", ""),
+        }
+        async for msg in self._do_transfer_and_dlinks(ev, surl, pwd, share_files, selected_indices, share_info):
             yield msg
 
     async def _handle_selection(self, ev: AstrMessageEvent, selection_text: str):
@@ -202,7 +232,7 @@ class BaiduCurlPlugin(Star):
 
         # 超时检查
         if time.time() - state["timestamp"] > self._SELECTION_TIMEOUT:
-            del self._pending_selections[sid]
+            await self._remove_pending_state(sid)
             yield ev.plain_result("⏰ 文件选择已超时，请重新发送链接")
             return
 
@@ -235,7 +265,7 @@ class BaiduCurlPlugin(Star):
             indices = sorted(set(indices))
 
         # 清理待选择状态
-        del self._pending_selections[sid]
+        await self._remove_pending_state(sid)
 
         # 显示已选文件
         selected_names = [share_files[i]["name"] for i in indices]
@@ -244,7 +274,13 @@ class BaiduCurlPlugin(Star):
         )
 
         # 转存选中的文件并提取直链
-        async for msg in self._do_transfer_and_dlinks(ev, surl, pwd, share_files, indices):
+        share_info = {
+            "uk": state.get("uk"),
+            "share_id": state.get("share_id"),
+            "bdstoken": state.get("bdstoken", ""),
+            "share_url": state.get("share_url", ""),
+        }
+        async for msg in self._do_transfer_and_dlinks(ev, surl, pwd, share_files, indices, share_info):
             yield msg
 
     async def _do_transfer_and_dlinks(
@@ -254,11 +290,12 @@ class BaiduCurlPlugin(Star):
         pwd: str,
         share_files: list,
         selected_indices: list,
+        share_info: dict = None,
     ):
         """转存选中的文件，然后提取直链、移动、清理"""
         # 1. 转存
         yield ev.plain_result("📦 转存中...")
-        tr = await self._transfer_selected_files(surl, pwd, selected_indices)
+        tr = await self._transfer_selected_files(surl, pwd, selected_indices, share_info)
         if not tr.get("success"):
             yield ev.plain_result("❌ 转存失败: " + tr.get("error", "未知"))
             return
@@ -275,13 +312,12 @@ class BaiduCurlPlugin(Star):
         await asyncio.sleep(3)
 
         # 3. 用文件名在百度网盘里匹配（扫描确认）
-        cutoff_time = 0 if existed else (int(time.time()) - 60)
+        cutoff_time = 0 if existed else (int(time.time()) - 300)
         if existed:
             logger.info("[scan] 文件已存在，跳过时间过滤")
         logger.info(f"[scan] 要匹配的文件: {transfer_files}, 已存在: {existed}")
 
         files = []
-        has_actual_dir = False
 
         token_ok = await self._refresh_access_token()
         if token_ok and self._access_token:
@@ -296,7 +332,6 @@ class BaiduCurlPlugin(Star):
                 self.save_dir,
                 save_dir,
                 [],
-                has_actual_dir,
                 cutoff_time,
             )
             if final_dir:
@@ -307,7 +342,7 @@ class BaiduCurlPlugin(Star):
             files = [f"{save_dir}/{fn}" for fn in transfer_files]
 
         # 4. 提取直链
-        async for msg in self._run_dlinks(ev, files, save_dir, surl, has_actual_dir):
+        async for msg in self._run_dlinks(ev, files, save_dir, surl):
             yield msg
 
     async def _run_dlinks(
@@ -316,7 +351,6 @@ class BaiduCurlPlugin(Star):
         files: list,
         save_dir: str,
         surl: str,
-        has_actual_dir: bool,
     ):
         """提取直链、移动文件夹、清理（从 _run 分离，可被选择流程复用）"""
         search_dirs = set()
@@ -372,9 +406,6 @@ class BaiduCurlPlugin(Star):
                 elif not move_msg:
                     move_msg = "\n\n⚠️ 移动失败"
 
-                # 清理空日期目录
-                if has_actual_dir and save_dir and "/sharelink" not in save_dir:
-                    await self._cleanup_date_dirs(save_dir)
                 # 清理 /来自Bot 中的过期文件
                 await self._cleanup_old_files()
 
@@ -391,17 +422,21 @@ class BaiduCurlPlugin(Star):
             yield ev.plain_result("✅ 文件夹已移动到 " + self.save_dir)
             save_dir = self.save_dir
 
-        # 清理任务
-        if has_actual_dir and save_dir and "/sharelink" not in save_dir:
-            await self._cleanup_date_dirs(save_dir)
         # 清理 /来自Bot 中的过期文件
         await self._cleanup_old_files()
 
         yield ev.plain_result("💡 文件已转存，路径: " + save_dir)
 
     # ---- 从 OpenList 获取凭证并刷新 token ----
+    _TOKEN_CACHE_TTL = 3600  # token 缓存有效期（秒），1 小时
+
     async def _refresh_access_token(self) -> bool:
-        """从 OpenList 加载百度 AccessToken"""
+        """从 OpenList 加载百度 AccessToken（带缓存，未过期时直接返回）"""
+        # 检查缓存
+        if self._access_token and self._token_expire and time.time() < self._token_expire:
+            logger.info(f"[token] 使用缓存 AccessToken（剩余 {int(self._token_expire - time.time())}s）")
+            return True
+
         try:
             async with aiohttp.ClientSession() as sess:
                 r = await sess.post(
@@ -424,12 +459,13 @@ class BaiduCurlPlugin(Star):
                     if "Baidu" in s.get("driver", ""):
                         a = json.loads(s.get("addition", "{}"))
                         self._access_token = a.get("AccessToken", "")
+                        self._token_expire = time.time() + self._TOKEN_CACHE_TTL
                         logger.info(
-                            f"[token] 加载 AccessToken: {self._access_token[:25]}..."
+                            f"[token] 加载 AccessToken: {self._access_token[:25]}... (缓存 {self._TOKEN_CACHE_TTL}s)"
                         )
                         return bool(self._access_token)
         except Exception as e:
-            logger.error(f"[token] 加载失败: {e}")
+            logger.exception(f"[token] 加载失败: {e}")
         return False
 
     def _get_dlinks_sync(self, search_dirs: list, file_names: list = None) -> list:
@@ -458,7 +494,7 @@ class BaiduCurlPlugin(Star):
                     else:
                         all_files.append(f)
             except Exception as e:
-                logger.warning("[dlink] list error: " + str(e))
+                logger.warning("[dlink] list error", exc_info=True)
 
         for d in search_dirs:
             _list_dir(d)
@@ -508,6 +544,46 @@ class BaiduCurlPlugin(Star):
         return dlinks
 
 
+    @staticmethod
+    def _list_dir_api(session, at, dir_path, timeout=15):
+        """调用百度 API 列出目录内容，返回 list 或空列表"""
+        encoded = urllib.parse.quote(dir_path, safe="/")
+        resp = session.get(
+            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
+            timeout=timeout,
+        )
+        data = resp.json()
+        if data.get("errno") != 0:
+            logger.warning(f"[scan] list {dir_path}: errno={data.get('errno')}")
+            return []
+        return data.get("list", [])
+
+    def _scan_recursive(self, session, at, dir_path, scan_files, min_mtime,
+                        depth, files, state):
+        """通用递归扫描：列出目录，匹配文件，递归子目录（最大 3 层）"""
+        if depth > 3 or state["done"]:
+            return
+        try:
+            items = self._list_dir_api(session, at, dir_path)
+            for f in items:
+                if state["done"]:
+                    return
+                fname = f.get("server_filename", "")
+                if f.get("isdir"):
+                    self._scan_recursive(session, at, f.get("path", ""),
+                                         scan_files, min_mtime, depth + 1,
+                                         files, state)
+                    continue
+                if min_mtime and f.get("server_mtime", 0) < min_mtime:
+                    continue
+                if scan_files is not None and fname not in scan_files:
+                    continue
+                files.append(f.get("path", ""))
+                state["save_dir"] = dir_path
+                logger.info(f"[scan] 匹配到文件: {fname}")
+        except Exception as e:
+            logger.warning(f"[scan] 递归扫描错误 ({dir_path}): {e}", exc_info=True)
+
     def _scan_files_sync(
         self,
         at,
@@ -515,212 +591,67 @@ class BaiduCurlPlugin(Star):
         save_dir_param="/来自Bot",
         actual_dir=None,
         extra_dirs=None,
-        has_actual_dir=False,
         min_mtime=0,
     ):
-        """同步扫描百度网盘文件（在线程池中调用）"""
+        """同步扫描百度网盘文件（在线程池中调用）
+
+        扫描策略（按优先级）：
+        1. 扫描指定目录列表（actual_dir, extra_dirs, save_dir_param）
+        2. 搜索根目录的 sharelink 文件夹
+        3. 搜索 save_dir_param 下的 sharelink 子目录
+        """
         files = []
-        save_dir = save_dir_param
+        state = {"save_dir": save_dir_param, "done": False}
 
         try:
             s = cffi_requests.Session(impersonate="chrome120")
 
-            # 要扫描的目录列表（优先扫实际目录）
+            # 阶段 1: 扫描指定目录列表
             dirs_to_scan = []
             if actual_dir:
                 dirs_to_scan.append(actual_dir)
             if extra_dirs:
                 dirs_to_scan.extend(extra_dirs)
-
-            # 如果没有明确的转存目录，才扫描 save_dir_param
-            if not has_actual_dir and save_dir_param not in dirs_to_scan:
+            if save_dir_param not in dirs_to_scan:
                 dirs_to_scan.append(save_dir_param)
 
-            # 扫描指定目录
             for scan_dir in dirs_to_scan:
                 if files:
                     break
                 logger.info(f"[scan] 扫描目录: {scan_dir}")
-                bot_encoded = urllib.parse.quote(scan_dir, safe="/")
-                bot_resp = s.get(
-                    f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={bot_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                    timeout=15,
-                )
-                bot_data = bot_resp.json()
-                logger.info(
-                    f"[scan] {scan_dir} 文件数: {len(bot_data.get('list', []))}"
-                )
+                self._scan_recursive(s, at, scan_dir, scan_files, min_mtime,
+                                     0, files, state)
 
-                # 用文件名匹配（有明确目录时，只取该目录的文件）
-                def _scan_dir(dir_path, depth=0):
-                    nonlocal save_dir
-                    if depth > 3:
-                        return
-                    try:
-                        encoded = urllib.parse.quote(dir_path, safe="/")
-                        resp = s.get(
-                            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                            timeout=15,
-                        )
-                        data = resp.json()
-                        for f in data.get("list", []):
-                            fname = f.get("server_filename", "")
-                            if f.get("isdir"):
-                                _scan_dir(f.get("path", ""), depth + 1)
-                                continue
-                            if min_mtime and f.get("server_mtime", 0) < min_mtime:
-                                continue
-                            if (
-                                not has_actual_dir
-                                and scan_files is not None
-                                and fname not in scan_files
-                            ):
-                                continue
-                            files.append(f.get("path", ""))
-                            save_dir = dir_path
-                            logger.info(f"[scan] 匹配到文件: {fname}")
-                    except Exception as e:
-                        logger.warning(f"[scan] 子目录扫描错误: {e}")
-
-                _scan_dir(scan_dir)
-
-                # 如果是 actual_dir 且找到了文件，不需要继续扫描其他目录
-                if files and scan_dir == actual_dir:
-                    break
-
-            # 搜索根目录的 sharelink 文件夹（不管有没有明确目录都要搜）
-            if not files or has_actual_dir:
-                logger.info(f"[scan] 搜索根目录 sharelink")
-                root_resp = s.get(
-                    f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir=/&dlink=1&web=1&app_id=250528&access_token={at}",
-                    timeout=15,
-                )
-                root_data = root_resp.json()
-                for item in root_data.get("list", []):
-                    if item.get("isdir") and "sharelink" in item.get("path", ""):
-                        sub_encoded = urllib.parse.quote(item["path"], safe="/")
-                        sub_resp = s.get(
-                            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                            timeout=15,
-                        )
-                        sub_data = sub_resp.json()
-                        for f in sub_data.get("list", []):
-                            fname = f.get("server_filename", "")
-                            if f.get("isdir"):
-                                continue
-                            if min_mtime and f.get("server_mtime", 0) < min_mtime:
-                                continue
-                            if (
-                                not has_actual_dir
-                                and scan_files is not None
-                                and fname not in scan_files
-                            ):
-                                continue
-                            files.append(f.get("path", ""))
-                            save_dir = item["path"]
-                            logger.info(
-                                f"[scan] 匹配到文件: {fname} (在 {item['path']})"
-                            )
-
-            # 搜索根目录的其他文件夹（可能创建日期目录如 /2024 或 /分享等）
-            if has_actual_dir:
-                logger.info(f"[scan] 搜索根目录其他文件夹")
-                for item in root_data.get("list", []):
-                    path = item.get("path", "")
-                    if (
-                        item.get("isdir")
-                        and "/sharelink" not in path
-                        and path not in ("/来自Bot", "/apps")
-                    ):
-                        try:
-                            encoded = urllib.parse.quote(path, safe="/")
-                            sub_resp = s.get(
-                                f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                                timeout=15,
-                            )
-                            sub_data = sub_resp.json()
-                            for f in sub_data.get("list", []):
-                                fname = f.get("server_filename", "")
-                                if f.get("isdir"):
-                                    # 递归进入子目录（最多 3 层）
-                                    sub2_encoded = urllib.parse.quote(
-                                        f["path"], safe="/"
-                                    )
-                                    sub2_resp = s.get(
-                                        f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub2_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                                        timeout=15,
-                                    )
-                                    sub2_data = sub2_resp.json()
-                                    for f2 in sub2_data.get("list", []):
-                                        if f2.get("isdir"):
-                                            sub3_encoded = urllib.parse.quote(
-                                                f2["path"], safe="/"
-                                            )
-                                            sub3_resp = s.get(
-                                                f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub3_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                                                timeout=15,
-                                            )
-                                            sub3_data = sub3_resp.json()
-                                            for f3 in sub3_data.get("list", []):
-                                                if not f3.get("isdir"):
-                                                    if (
-                                                        min_mtime
-                                                        and f3.get("server_mtime", 0)
-                                                        >= min_mtime
-                                                    ):
-                                                        files.append(f3.get("path", ""))
-                                                        save_dir = f2["path"]
-                                                        logger.info(
-                                                            f"[scan] 匹配到文件(日期目录): {f3.get('server_filename', '')}"
-                                                        )
-                                        else:
-                                            if (
-                                                min_mtime
-                                                and f2.get("server_mtime", 0)
-                                                >= min_mtime
-                                            ):
-                                                files.append(f2.get("path", ""))
-                                                save_dir = f["path"]
-                                                logger.info(
-                                                    f"[scan] 匹配到文件(日期目录): {f2.get('server_filename', '')}"
-                                                )
-                                else:
-                                    if (
-                                        min_mtime
-                                        and f.get("server_mtime", 0) >= min_mtime
-                                    ):
-                                        files.append(f.get("path", ""))
-                                        save_dir = path
-                                        logger.info(
-                                            f"[scan] 匹配到文件(日期目录): {fname}"
-                                        )
-                        except Exception as e:
-                            logger.warning(f"[scan] 日期目录扫描错误: {e}")
-
-            # 搜索 /来自Bot 的子目录
+            # 阶段 2: 搜索根目录的 sharelink 文件夹
             if not files:
-                logger.info(f"[scan] 根目录没找到，搜索子目录")
-                for item in bot_data.get("list", []):
+                logger.info(f"[scan] 搜索根目录 sharelink")
+                root_items = self._list_dir_api(s, at, "/")
+                for item in root_items:
+                    if files:
+                        break
                     if item.get("isdir") and "sharelink" in item.get("path", ""):
-                        sub_encoded = urllib.parse.quote(item["path"], safe="/")
-                        sub_resp = s.get(
-                            f"https://pan.baidu.com/rest/2.0/xpan/file?method=list&dir={sub_encoded}&dlink=1&web=1&app_id=250528&access_token={at}",
-                            timeout=15,
-                        )
-                        sub_data = sub_resp.json()
-                        for f in sub_data.get("list", []):
-                            fname = f.get("server_filename", "")
-                            if scan_files is None or fname in scan_files:
-                                if min_mtime and f.get("server_mtime", 0) < min_mtime:
-                                    continue
-                                files.append(f.get("path", ""))
-                                save_dir = item["path"]
-                                logger.info(
-                                    f"[scan] 匹配到文件: {fname} (在 {item['path']})"
-                                )
-        except Exception as e:
-            logger.error(f"[scan] 扫描失败: {e}")
+                        self._scan_recursive(s, at, item["path"], scan_files,
+                                             min_mtime, 0, files, state)
+                        if files:
+                            state["save_dir"] = item["path"]
 
+            # 阶段 3: 搜索 save_dir_param 下的 sharelink 子目录
+            if not files:
+                logger.info(f"[scan] 搜索 {save_dir_param} 子目录")
+                bot_items = self._list_dir_api(s, at, save_dir_param)
+                for item in bot_items:
+                    if files:
+                        break
+                    if item.get("isdir") and "sharelink" in item.get("path", ""):
+                        self._scan_recursive(s, at, item["path"], scan_files,
+                                             min_mtime, 0, files, state)
+                        if files:
+                            state["save_dir"] = item["path"]
+
+        except Exception as e:
+            logger.exception(f"[scan] 扫描失败: {e}")
+
+        save_dir = state["save_dir"]
         logger.info(f"[scan] 最终文件: {files}, 目录: {save_dir}")
         return files, save_dir
 
@@ -734,7 +665,7 @@ class BaiduCurlPlugin(Star):
                 None, self._cleanup_date_dirs_sync, dir_path, self._access_token
             )
         except Exception as e:
-            logger.warning(f"[cleanup] 清理目录失败: {e}")
+            logger.warning(f"[cleanup] 清理目录失败: {e}", exc_info=True)
 
     def _cleanup_date_dirs_sync(self, dir_path: str, at: str):
         """同步清理日期目录（在线程池中执行）"""
@@ -756,7 +687,7 @@ class BaiduCurlPlugin(Star):
                     f"[cleanup] 删除 {path}: errno={data.get('errno')}, info={data.get('info')}"
                 )
         except Exception as e:
-            logger.warning(f"[cleanup] 删除目录异常: {e}")
+            logger.warning(f"[cleanup] 删除目录异常: {e}", exc_info=True)
 
     async def _cleanup_old_files(self):
         """清理 /来自Bot 中超过保留时长的文件"""
@@ -770,7 +701,7 @@ class BaiduCurlPlugin(Star):
             if deleted:
                 logger.info(f"[cleanup] 清理了 {deleted} 个过期文件")
         except Exception as e:
-            logger.warning(f"[cleanup] 清理旧文件失败: {e}")
+            logger.warning(f"[cleanup] 清理旧文件失败: {e}", exc_info=True)
 
     def _cleanup_old_files_sync(self, at: str) -> int:
         """同步清理过期文件（在线程池中执行）"""
@@ -798,7 +729,7 @@ class BaiduCurlPlugin(Star):
                             if mtime < cutoff:
                                 all_files.append(f.get("path", ""))
                 except Exception as e:
-                    logger.warning(f"[cleanup] 列出目录失败: {e}")
+                    logger.warning(f"[cleanup] 列出目录失败: {e}", exc_info=True)
 
             _list_recursive(self.save_dir)
 
@@ -824,9 +755,20 @@ class BaiduCurlPlugin(Star):
 
             return len(all_files)
         except Exception as e:
-            logger.warning(f"[cleanup] 清理旧文件异常: {e}")
+            logger.warning(f"[cleanup] 清理旧文件异常: {e}", exc_info=True)
             return 0
 
+
+    @staticmethod
+    def _format_size(size_bytes: int) -> str:
+        """将字节数格式化为可读的文件大小字符串"""
+        if not size_bytes:
+            return ""
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if size_bytes < 1024:
+                return f"{size_bytes:.1f}{unit}" if unit != "B" else f"{size_bytes}B"
+            size_bytes /= 1024
+        return f"{size_bytes:.1f}PB"
 
     # ==================== 内置转存（BDUSS Cookie） ====================
 
@@ -838,18 +780,18 @@ class BaiduCurlPlugin(Star):
                 None, self._list_share_files_sync, surl, pwd
             )
         except Exception as e:
-            logger.error(f"[builtin] 列出分享文件失败: {e}")
+            logger.exception(f"[builtin] 列出分享文件失败: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _transfer_selected_files(self, surl: str, pwd: str, selected_indices: list) -> dict:
+    async def _transfer_selected_files(self, surl: str, pwd: str, selected_indices: list, share_info: dict = None) -> dict:
         """转存选中的文件"""
         try:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
-                None, self._transfer_files_sync, surl, pwd, selected_indices
+                None, self._transfer_files_sync, surl, pwd, selected_indices, share_info
             )
         except Exception as e:
-            logger.error(f"[builtin] 转存失败: {e}")
+            logger.exception(f"[builtin] 转存失败: {e}")
             return {"success": False, "error": str(e)}
 
     @staticmethod
@@ -931,12 +873,24 @@ class BaiduCurlPlugin(Star):
                 return {"success": False, "error": "无法解析分享页面，可能 Cookie 已过期或分享已失效"}
 
             start = match.end()
+            # 健壮的 JSON 提取：记录字符串状态，避免字符串中的花括号干扰
             brace_count = 0
+            in_string = False
+            escaped = False
             end = start
             for i, c in enumerate(html[start:], start):
-                if c == "{":
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif c == '\\':
+                        escaped = True
+                    elif c == '"':
+                        in_string = False
+                elif c == '"':
+                    in_string = True
+                elif c == '{':
                     brace_count += 1
-                elif c == "}":
+                elif c == '}':
                     brace_count -= 1
                     if brace_count == 0:
                         end = i + 1
@@ -984,7 +938,8 @@ class BaiduCurlPlugin(Star):
                         if fs_id:
                             name = f.get("server_filename") or f.get("path", "").split("/")[-1]
                             path = f.get("path", name)
-                            all_files.append({"name": name, "fs_id": fs_id, "path": path})
+                            size = f.get("size", 0)
+                            all_files.append({"name": name, "fs_id": fs_id, "path": path, "size": size})
                             logger.info(f"[builtin] 记录文件: {name}")
 
             _collect_files(root_files)
@@ -1004,28 +959,38 @@ class BaiduCurlPlugin(Star):
             }
 
         except Exception as e:
-            logger.error(f"[builtin] 列出分享文件异常: {e}")
+            logger.exception(f"[builtin] 列出分享文件异常: {e}")
             return {"success": False, "error": str(e)}
 
-    def _transfer_files_sync(self, surl: str, pwd: str, selected_indices: list) -> dict:
+    def _transfer_files_sync(self, surl: str, pwd: str, selected_indices: list, share_info: dict = None) -> dict:
         """转存选中的文件
 
         Args:
             surl: 分享 surl
             pwd: 提取码
             selected_indices: 选中的文件索引列表（对应 _list_share_files 返回的 files 列表）
+            share_info: 可选的预获取分享信息 {uk, share_id, bdstoken, share_url, files}，避免重复请求
         """
         try:
-            # 先列出文件获取 uk/share_id/bdstoken
-            lr = self._list_share_files_sync(surl, pwd)
-            if not lr.get("success"):
-                return lr
-
-            all_files = lr["files"]
-            uk = lr["uk"]
-            share_id = lr["share_id"]
-            bdstoken = lr["bdstoken"]
-            share_url = lr["share_url"]
+            # 如果 share_info 提供了分享信息，跳过重新列出；否则先列出文件获取 uk/share_id/bdstoken
+            if share_info:
+                all_files = share_info.get("files") or share_info.get("share_files")
+                uk = share_info.get("uk")
+                share_id = share_info.get("share_id")
+                bdstoken = share_info.get("bdstoken", "")
+                share_url = share_info.get("share_url", "")
+                if not all_files or not uk or not share_id:
+                    share_info = None  # 信息不完整，回退到重新列出
+                    
+            if not share_info:
+                lr = self._list_share_files_sync(surl, pwd)
+                if not lr.get("success"):
+                    return lr
+                all_files = lr["files"]
+                uk = lr["uk"]
+                share_id = lr["share_id"]
+                bdstoken = lr["bdstoken"]
+                share_url = lr["share_url"]
 
             # 筛选选中的文件
             selected = []
@@ -1137,7 +1102,7 @@ class BaiduCurlPlugin(Star):
                 return {"success": False, "error": f"转存失败 (errno={errno})"}
 
         except Exception as e:
-            logger.error(f"[builtin] 转存异常: {e}")
+            logger.exception(f"[builtin] 转存异常: {e}")
             return {"success": False, "error": str(e)}
 
     def _list_shared_dir_builtin(self, session, dir_path: str, uk: int, share_id: int) -> list:
@@ -1179,7 +1144,7 @@ class BaiduCurlPlugin(Star):
                 if page > 10:  # 安全限制，最多 1000 个文件
                     break
             except Exception as e:
-                logger.warning(f"[builtin] 列出目录异常: {e}")
+                logger.warning(f"[builtin] 列出目录异常: {e}", exc_info=True)
                 break
         return all_files
 
@@ -1196,7 +1161,7 @@ class BaiduCurlPlugin(Star):
             if m:
                 return m.group(1)
         except Exception as e:
-            logger.warning(f"[builtin] 获取 bdstoken 失败: {e}")
+            logger.warning(f"[builtin] 获取 bdstoken 失败: {e}", exc_info=True)
         return ""
 
     def _ensure_dir_exists(self, session, dir_path: str):
@@ -1251,7 +1216,7 @@ class BaiduCurlPlugin(Star):
                 else:
                     logger.warning(f"[builtin] 创建目录失败: {current}, errno={errno}")
             except Exception as e:
-                logger.warning(f"[builtin] 创建目录异常: {current}, {e}")
+                logger.warning(f"[builtin] 创建目录异常: {current}, {e}", exc_info=True)
 
     async def _get_dlinks(self, save_dir: str, file_names: list = None) -> list:
         loop = asyncio.get_running_loop()
@@ -1274,27 +1239,34 @@ class BaiduCurlPlugin(Star):
                 None, self._move_single_dir_sync, from_dir, to_dir
             )
         except Exception as e:
-            logger.error(f"[move] 移动失败: {e}")
+            logger.exception(f"[move] _move_single_dir 失败: {e}")
             return False
+
+    def _openlist_login_sync(self, session) -> tuple:
+        """用已有 session 登录 OpenList，返回 (headers, pan_prefix) 或 (None, None)"""
+        try:
+            login_resp = session.post(
+                f"{self.openlist_url}/api/auth/login",
+                json={"username": self.openlist_user, "password": self.openlist_pass},
+                allow_redirects=False,
+                timeout=15,
+            )
+            admin_token = login_resp.json().get("data", {}).get("token", "")
+            if not admin_token:
+                logger.error("[move] OpenList 登录失败")
+                return None, None
+            return {"Authorization": admin_token}, self.openlist_pan_path
+        except Exception as e:
+            logger.exception(f"[move] OpenList 登录异常: {e}")
+            return None, None
 
     def _move_single_dir_sync(self, from_dir: str, to_dir: str) -> bool:
         """同步移动单个目录"""
         try:
             with cffi_requests.Session(impersonate="chrome120") as s:
-                # 登录 OpenList
-                login_resp = s.post(
-                    f"{self.openlist_url}/api/auth/login",
-                    json={
-                        "username": self.openlist_user,
-                        "password": self.openlist_pass,
-                    },
-                    allow_redirects=False,
-                    timeout=15,
-                )
-                admin_token = login_resp.json().get("data", {}).get("token", "")
-                headers = {"Authorization": admin_token}
-
-                pan_prefix = "/百度"
+                headers, pan_prefix = self._openlist_login_sync(s)
+                if not headers:
+                    return False
 
                 # 获取源目录里的文件
                 src_path = f"{pan_prefix}{from_dir}"
@@ -1365,7 +1337,7 @@ class BaiduCurlPlugin(Star):
                 return False
 
         except Exception as e:
-            logger.error(f"[move] 移动失败: {e}")
+            logger.exception(f"[move] 移动失败: {e}")
             return False
 
     async def _move_folder(self, from_dir: str, to_dir: str) -> bool:
@@ -1380,7 +1352,7 @@ class BaiduCurlPlugin(Star):
                 None, self._move_folder_sync, from_dir, to_dir
             )
         except Exception as e:
-            logger.error(f"[move] 移动失败: {e}")
+            logger.exception(f"[move] 移动失败: {e}")
             return False
 
     def _move_folder_sync(self, from_dir: str, to_dir: str) -> bool:
@@ -1388,21 +1360,9 @@ class BaiduCurlPlugin(Star):
         try:
             s = cffi_requests.Session(impersonate="chrome120")
 
-            # 登录 OpenList
-            login_resp = s.post(
-                f"{self.openlist_url}/api/auth/login",
-                json={"username": self.openlist_user, "password": self.openlist_pass},
-                allow_redirects=False,
-                timeout=15,
-            )
-            admin_token = login_resp.json().get("data", {}).get("token", "")
-
-            if not admin_token:
-                logger.error("[move] OpenList 登录失败")
+            headers, pan_prefix = self._openlist_login_sync(s)
+            if not headers:
                 return False
-
-            headers = {"Authorization": admin_token}
-            pan_prefix = "/百度"
 
             # 扫描百度网盘根目录，找最近的 sharelink 文件夹
             resp = s.post(
@@ -1513,70 +1473,6 @@ class BaiduCurlPlugin(Star):
             return False
 
         except Exception as e:
-            logger.error(f"[move] 移动失败: {e}")
+            logger.exception(f"[move] 移动失败: {e}")
             return False
-
-    def _move_files_sync(self, files: list, from_dir: str, to_dir: str) -> bool:
-        """用 OpenList API 移动文件"""
-        try:
-            # 获取 OpenList token
-            s = cffi_requests.Session(impersonate="chrome120")
-
-            login_resp = s.post(
-                f"{self.openlist_url}/api/auth/login",
-                json={"username": self.openlist_user, "password": self.openlist_pass},
-                allow_redirects=False,
-                timeout=15,
-            )
-            admin_token = login_resp.json().get("data", {}).get("token", "")
-
-            if not admin_token:
-                logger.error("[move] OpenList 登录失败")
-                return False
-
-            headers = {"Authorization": admin_token}
-
-            # OpenList 百度网盘挂载路径前缀
-            pan_prefix = "/百度"
-
-            # 构建源目录和目标目录路径
-            src_dir = f"{pan_prefix}{from_dir}"
-            dst_dir = f"{pan_prefix}{to_dir}"
-
-            # 提取文件名列表
-            names = []
-            for f in files:
-                fname = f.split("/")[-1] if "/" in f else f
-                names.append(fname)
-
-            if not names:
-                return False
-
-            logger.info(f"[move] 移动文件: {src_dir} -> {dst_dir}, 文件: {names}")
-
-            # 调用 OpenList 移动 API
-            resp = s.post(
-                f"{self.openlist_url}/api/fs/move",
-                headers=headers,
-                json={"src_dir": src_dir, "dst_dir": dst_dir, "names": names},
-                timeout=30,
-            )
-            result = resp.json()
-            logger.info(f"[move] 移动结果: {result}")
-
-            # 成功或文件已存在都算成功
-            code = result.get("code")
-            msg = result.get("message", "")
-            if code == 200:
-                return True
-            if "exists" in msg:
-                # 文件已存在，检查是否真的在目标目录
-                logger.info(f"[move] 文件已存在，跳过移动")
-                return True
-            return False
-
-        except Exception as e:
-            logger.error(f"[move] 移动失败: {e}")
-            return False
-
 

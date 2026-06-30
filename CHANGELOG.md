@@ -1,5 +1,32 @@
 # Changelog
 
+## v8.3.0 (2026-06-30)
+
+### 重构与优化
+- 重构 `_scan_files_sync`：提取 `_scan_recursive` + `_list_dir_api` 通用递归函数，三阶段扫描统一，降低嵌套深度（最大 7→3 层）
+- 提取 `_openlist_login_sync` 公共方法，消除 `_move_single_dir_sync` / `_move_folder_sync` 中重复的 OpenList 登录代码
+- 删除死代码 `_move_files_sync` 方法和 `has_actual_dir` 相关分支（~130 行）
+
+### 功能改进
+- 文件选择列表新增显示文件大小（自动格式化 B/KB/MB/GB/TB）
+- `_refresh_access_token` 新增 1 小时缓存（`_TOKEN_CACHE_TTL`），减少重复登录 OpenList
+- `server_mtime` 时间过滤窗口从 60s 扩大到 300s，避免因百度延迟漏匹配
+- HTML JSON 解析增加字符串状态追踪，防止文件名中的花括号干扰
+
+### 依赖
+- `requirements.txt` 添加 `curl_cffi>=0.5.0`
+
+### Bug 修复
+- 修复 `openlist_pan_path` 配置项已定义但未使用的问题（3 处硬编码 `/百度` 替换）
+- 修复转存时重复调用 `_list_share_files_sync` 的问题：透传 `share_info` 避免二次请求
+- 移除未使用的 `_refresh_token` / `_client_id` / `_client_secret` 字段
+
+### 安全
+- `_pending_selections` 添加 `asyncio.Lock` 并发保护
+- 所有 `except Exception` 增加堆栈信息：10 处 `logger.exception` + 10 处 `exc_info=True`
+
+---
+
 ## v8.2.0 (2026-06-29)
 
 ### 优化
